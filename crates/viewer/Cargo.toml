@@ -1,0 +1,11 @@
+[package]
+name = "battery-monitor-viewer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+battery-monitor-core = { path = "../core" }
+anyhow.workspace = true
+crossterm.workspace = true
+tui.workspace = true
+sled.workspace = true

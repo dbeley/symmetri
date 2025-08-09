@@ -1,0 +1,12 @@
+[package]
+name = "battery-monitor-daemon"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+battery-monitor-core = { path = "../core" }
+anyhow.workspace = true
+battery.workspace = true
+sled.workspace = true
+tokio.workspace = true
+chrono.workspace = true

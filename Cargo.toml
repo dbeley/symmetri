@@ -1,0 +1,23 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/daemon",
+    "crates/viewer"
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+authors = ["Example <example@example.com>"]
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+battery = "0.7"
+sled = "0.34"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
+crossterm = "0.27"
+tui = { version = "0.19", default-features = false, features = ["crossterm"] }
