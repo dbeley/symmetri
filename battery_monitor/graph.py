@@ -17,10 +17,10 @@ log = logging.getLogger(__name__)
 def _timeframe_seconds(timeframe: str) -> Optional[float]:
     normalized = timeframe.lower().replace("-", "_")
     mapping = {
-        "last_hour": 3600,
+        "last_3h": 3 * 3600,
+        "last_12h": 12 * 3600,
         "last_day": 86400,
         "last_week": 7 * 86400,
-        "last_month": 30 * 86400,
         "all": None,
     }
     if normalized not in mapping:

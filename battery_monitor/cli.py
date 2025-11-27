@@ -49,7 +49,7 @@ def collect_command(
 def report_command(
     timeframe: str = typer.Option(
         "last_day",
-        help="Timeframe: last_hour, last_day, last_week, last_month, all",
+        help="Timeframe: last_3h, last_12h, last_day, last_week, all",
     ),
     db_path: Optional[Path] = typer.Option(
         None, help="Path to SQLite database (or set BATTERY_MONITOR_DB)"
@@ -201,18 +201,23 @@ def _timeframe_report_table(timeframe: str, samples: list[db.Sample]) -> Table:
 
 def _bucket_start(ts: float, timeframe: str) -> datetime:
     dt = datetime.fromtimestamp(ts).astimezone()
-    if timeframe == "last_hour":
-        minute_bucket = (dt.minute // 10) * 10
+    if timeframe == "last_3h":
+        minute_bucket = (dt.minute // 15) * 15
         return dt.replace(minute=minute_bucket, second=0, microsecond=0)
+    if timeframe == "last_12h":
+        return dt.replace(minute=0, second=0, microsecond=0)
     if timeframe == "last_day":
         return dt.replace(minute=0, second=0, microsecond=0)
+    if timeframe == "last_week":
+        hour_bucket = (dt.hour // 14) * 14
+        return dt.replace(hour=hour_bucket, minute=0, second=0, microsecond=0)
     return dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def _format_bucket(dt: datetime, timeframe: str) -> str:
-    if timeframe == "last_hour":
+    if timeframe == "last_3h":
         return dt.strftime("%m-%d %H:%M")
-    if timeframe == "last_day":
+    if timeframe in {"last_12h", "last_day", "last_week"}:
         return dt.strftime("%m-%d %H:00")
     return dt.strftime("%Y-%m-%d")
 

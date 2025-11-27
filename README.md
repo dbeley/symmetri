@@ -1,6 +1,6 @@
 # Battery Monitor
 
-Battery collector + graph/report tools for Linux (tested on NixOS). Collects battery metrics from `/sys/class/power_supply`, stores the records in SQLite, and provides quick graphs/reports for the last hour/day/week/month.
+Battery collector + graph/report tools for Linux (tested on NixOS). Collects battery metrics from `/sys/class/power_supply`, stores the records in SQLite, and provides quick graphs/reports for the last 3h/12h/day/week.
 
 ## Features
 - Collect energy/percentage/health for each battery detected in sysfs
@@ -49,7 +49,7 @@ battery-monitor-report --timeframe last_day --output ~/battery-day.png
 
 Use `--output` to save a graph image; without it the command prints only the textual report.
 
-Supported timeframes (`--timeframe`): `last_hour`, `last_day`, `last_week`, `last_month`, `all`.
+Supported timeframes (`--timeframe`): `last_3h`, `last_12h`, `last_day`, `last_week`, `all`.
 
 ## Development
 ```bash
