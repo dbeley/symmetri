@@ -1,0 +1,10 @@
+[Unit]
+Description=Battery monitor collector
+ConditionPathExists=/sys/class/power_supply
+After=network.target
+
+[Service]
+Type=oneshot
+Environment=BATTERY_MONITOR_DB=/var/lib/battery-monitor/battery.db
+ExecStart=/usr/bin/env battery-monitor-collect
+StateDirectory=battery-monitor
