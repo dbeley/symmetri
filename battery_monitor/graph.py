@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -41,15 +42,15 @@ def render_plot(
         log.warning("No samples to plot")
         return
 
+    def _ts_to_num(ts: float) -> float:
+        # matplotlib 3.8 dropped mdates.epoch2num; date2num keeps behavior.
+        return mdates.date2num(datetime.fromtimestamp(ts, tz=timezone.utc))
+
     percent_points = [
-        (mdates.epoch2num(s.ts), s.percentage)
-        for s in samples
-        if s.percentage is not None
+        (_ts_to_num(s.ts), s.percentage) for s in samples if s.percentage is not None
     ]
     health_points = [
-        (mdates.epoch2num(s.ts), s.health_pct)
-        for s in samples
-        if s.health_pct is not None
+        (_ts_to_num(s.ts), s.health_pct) for s in samples if s.health_pct is not None
     ]
 
     fig, ax = plt.subplots()
