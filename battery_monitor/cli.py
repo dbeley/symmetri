@@ -45,8 +45,8 @@ def collect_command(
         raise typer.Exit(code=collect_once(db_path=db_path))
 
 
-@app.command("graph")
-def graph_command(
+@app.command("report")
+def report_command(
     timeframe: str = typer.Option(
         "last_day",
         help="Timeframe: last_hour, last_day, last_week, last_month, all",
@@ -57,10 +57,9 @@ def graph_command(
     output: Optional[Path] = typer.Option(
         None, help="Optional output image path (png/pdf/etc)"
     ),
-    show: bool = typer.Option(False, help="Show the graph interactively"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
 ) -> None:
-    """Render a graph + report for the selected timeframe."""
+    """Render a timeframe report (optionally save a graph to --output)."""
     configure_logging(verbose)
     resolved = resolve_db_path(db_path)
 
@@ -76,7 +75,8 @@ def graph_command(
         )
         raise typer.Exit(code=1)
 
-    render_plot(samples, show=show, output=output)
+    if output:
+        render_plot(samples, show=False, output=output)
     summarize(samples, all_samples, timeframe)
 
 
@@ -101,7 +101,7 @@ def summarize(
     summary.add_row("Records (timeframe)", str(len(timeframe_samples)))
     summary.add_row("First record ts", _format_timestamp(all_samples[0].ts))
     summary.add_row("Latest record ts", _format_timestamp(last.ts))
-    summary.add_row("Timeframe graphed", timeframe_label)
+    summary.add_row("Timeframe window", timeframe_label)
     summary.add_row("Latest status", last.status or "unknown")
     console.print(summary)
 
@@ -243,5 +243,5 @@ def main_collect() -> None:  # pragma: no cover - thin Typer wrapper
     typer.run(collect_command)
 
 
-def main_graph() -> None:  # pragma: no cover - thin Typer wrapper
-    typer.run(graph_command)
+def main_report() -> None:  # pragma: no cover - thin Typer wrapper
+    typer.run(report_command)

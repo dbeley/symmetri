@@ -5,7 +5,7 @@ Battery collector + graph/report tools for Linux (tested on NixOS). Collects bat
 ## Features
 - Collect energy/percentage/health for each battery detected in sysfs
 - SQLite storage with optional CSV export via `sqlite3`
-- CLI: `battery-monitor-collect` and `battery-monitor-graph` (graph + report)
+- CLI: `battery-monitor-collect` and `battery-monitor-report` (report + optional graph image)
 - systemd service + timer for periodic sampling
 - Nix flake for installation and dev shell
 
@@ -13,7 +13,7 @@ Battery collector + graph/report tools for Linux (tested on NixOS). Collects bat
 ```bash
 nix run . -- collect --help
 nix run . -- collect                  # one-shot collection
-nix run . -- graph --timeframe last_day --output battery.png
+nix run . -- report --timeframe last_day --output battery.png
 ```
 
 ## Database location
@@ -43,12 +43,11 @@ battery-monitor-collect
 # Collect repeatedly (60s interval)
 battery-monitor-collect --interval 60
 
-# Graph/report last day and save to png
-battery-monitor-graph --timeframe last_day --output ~/battery-day.png
-
-# Graph/report last hour and show interactively
-battery-monitor-graph --timeframe last_hour --show
+# Report last day and save graph to png
+battery-monitor-report --timeframe last_day --output ~/battery-day.png
 ```
+
+Use `--output` to save a graph image; without it the command prints only the textual report.
 
 Supported timeframes (`--timeframe`): `last_hour`, `last_day`, `last_week`, `last_month`, `all`.
 
