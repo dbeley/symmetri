@@ -14,8 +14,8 @@ from . import db
 log = logging.getLogger(__name__)
 
 
-def _period_seconds(period: str) -> Optional[float]:
-    normalized = period.lower().replace("-", "_")
+def _timeframe_seconds(timeframe: str) -> Optional[float]:
+    normalized = timeframe.lower().replace("-", "_")
     mapping = {
         "last_hour": 3600,
         "last_day": 86400,
@@ -24,12 +24,12 @@ def _period_seconds(period: str) -> Optional[float]:
         "all": None,
     }
     if normalized not in mapping:
-        raise ValueError(f"Unsupported period: {period}")
+        raise ValueError(f"Unsupported timeframe: {timeframe}")
     return mapping[normalized]
 
 
-def load_series(db_path: Path, period: str) -> list[db.Sample]:
-    seconds = _period_seconds(period)
+def load_series(db_path: Path, timeframe: str) -> list[db.Sample]:
+    seconds = _timeframe_seconds(timeframe)
     since_ts = time.time() - seconds if seconds is not None else None
     return list(db.fetch_samples(db_path, since_ts=since_ts))
 
@@ -39,7 +39,7 @@ def render_plot(
 ) -> None:
     samples = list(samples)
     if not samples:
-        log.warning("No samples to plot")
+        log.warning("No records to plot")
         return
 
     def _ts_to_num(ts: float) -> float:

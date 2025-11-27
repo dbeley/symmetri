@@ -9,7 +9,6 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from rich import box
-from rich.panel import Panel
 
 from . import db
 from .collector import collect_loop, collect_once, resolve_db_path
@@ -48,8 +47,9 @@ def collect_command(
 
 @app.command("graph")
 def graph_command(
-    period: str = typer.Option(
-        "last_day", help="Period: last_hour, last_day, last_week, last_month, all"
+    timeframe: str = typer.Option(
+        "last_day",
+        help="Timeframe: last_hour, last_day, last_week, last_month, all",
     ),
     db_path: Optional[Path] = typer.Option(
         None, help="Path to SQLite database (or set BATTERY_MONITOR_DB)"
@@ -60,32 +60,37 @@ def graph_command(
     show: bool = typer.Option(False, help="Show the graph interactively"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
 ) -> None:
-    """Render a graph for the selected period."""
+    """Render a graph + report for the selected timeframe."""
     configure_logging(verbose)
     resolved = resolve_db_path(db_path)
 
     all_samples = list(db.fetch_samples(resolved))
     if not all_samples:
-        console.print("No samples available; collect data first.")
+        console.print("No records available; collect data first.")
         raise typer.Exit(code=1)
 
-    samples = load_series(resolved, period)
+    samples = load_series(resolved, timeframe)
     if not samples:
-        console.print(f"No samples for {period}; try a wider window.")
+        console.print(
+            f"No records for {timeframe.replace('_', ' ')}; try a broader timeframe."
+        )
         raise typer.Exit(code=1)
 
     render_plot(samples, show=show, output=output)
-    summarize(samples, all_samples, period)
+    summarize(samples, all_samples, timeframe)
 
 
 def summarize(
-    period_samples: Iterable[db.Sample], all_samples: list[db.Sample], period: str
+    timeframe_samples: Iterable[db.Sample],
+    all_samples: list[db.Sample],
+    timeframe: str,
 ) -> None:
-    period_samples = list(period_samples)
-    last = period_samples[-1]
+    timeframe_samples = list(timeframe_samples)
+    last = timeframe_samples[-1]
+    timeframe_label = timeframe.replace("_", " ")
 
     summary = Table(
-        title="Battery stats",
+        title="Database stats",
         show_lines=False,
         box=box.SIMPLE,
         header_style="bold",
@@ -93,17 +98,16 @@ def summarize(
     summary.add_column("Field")
     summary.add_column("Value")
     summary.add_row("Records (all)", str(len(all_samples)))
-    summary.add_row("Records (period)", str(len(period_samples)))
-    summary.add_row("First record", _format_timestamp(all_samples[0].ts))
-    summary.add_row("Latest record", _format_timestamp(last.ts))
-    summary.add_row("Graphed period", period.replace("_", " "))
+    summary.add_row("Records (timeframe)", str(len(timeframe_samples)))
+    summary.add_row("First record ts", _format_timestamp(all_samples[0].ts))
+    summary.add_row("Latest record ts", _format_timestamp(last.ts))
+    summary.add_row("Timeframe graphed", timeframe_label)
     summary.add_row("Latest status", last.status or "unknown")
     console.print(summary)
 
     console.print(_recent_table(all_samples))
     console.print(_latest_table(last))
-    console.print(_period_report_table(period, period_samples))
-    console.print(_sparkline_panel(period_samples, period))
+    console.print(_timeframe_report_table(timeframe, timeframe_samples))
 
 
 def _format_timestamp(ts: float) -> str:
@@ -117,7 +121,7 @@ def _format_pct(value: Optional[float]) -> str:
 
 def _latest_table(sample: db.Sample) -> Table:
     latest = Table(
-        title="Latest sample",
+        title="Latest record",
         show_lines=False,
         box=box.SIMPLE,
         header_style="bold",
@@ -158,27 +162,28 @@ def _recent_table(samples: list[db.Sample]) -> Table:
     return recent
 
 
-def _period_report_table(period: str, samples: list[db.Sample]) -> Table:
+def _timeframe_report_table(timeframe: str, samples: list[db.Sample]) -> Table:
+    normalized = timeframe.replace("-", "_")
     buckets: dict[datetime, list[db.Sample]] = {}
     for sample in samples:
-        bucket_key = _bucket_start(sample.ts, period)
+        bucket_key = _bucket_start(sample.ts, normalized)
         buckets.setdefault(bucket_key, []).append(sample)
 
     report = Table(
-        title=f"{period.replace('_', ' ').title()} report",
+        title=f"{normalized.replace('_', ' ').title()} timeframe report",
         show_lines=False,
         box=box.SIMPLE,
         header_style="bold",
     )
     report.add_column("Window", no_wrap=True)
-    report.add_column("Samples", justify="right")
+    report.add_column("Records", justify="right")
     report.add_column("Min %", justify="right")
     report.add_column("Avg %", justify="right")
     report.add_column("Max %", justify="right")
     report.add_column("Latest status", no_wrap=True)
 
     for bucket_start in sorted(buckets):
-        window_label = _format_bucket(bucket_start, period)
+        window_label = _format_bucket(bucket_start, normalized)
         bucket_samples = buckets[bucket_start]
         pct_values = [s.percentage for s in bucket_samples if s.percentage is not None]
         min_pct, avg_pct, max_pct = _pct_stats(pct_values)
@@ -194,15 +199,20 @@ def _period_report_table(period: str, samples: list[db.Sample]) -> Table:
     return report
 
 
-def _bucket_start(ts: float, period: str) -> datetime:
+def _bucket_start(ts: float, timeframe: str) -> datetime:
     dt = datetime.fromtimestamp(ts).astimezone()
-    if period in {"last_hour", "last_day"}:
+    if timeframe == "last_hour":
+        minute_bucket = (dt.minute // 10) * 10
+        return dt.replace(minute=minute_bucket, second=0, microsecond=0)
+    if timeframe == "last_day":
         return dt.replace(minute=0, second=0, microsecond=0)
     return dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-def _format_bucket(dt: datetime, period: str) -> str:
-    if period in {"last_hour", "last_day"}:
+def _format_bucket(dt: datetime, timeframe: str) -> str:
+    if timeframe == "last_hour":
+        return dt.strftime("%m-%d %H:%M")
+    if timeframe == "last_day":
         return dt.strftime("%m-%d %H:00")
     return dt.strftime("%Y-%m-%d")
 
@@ -215,43 +225,6 @@ def _pct_stats(values: list[float]) -> tuple[str, str, str]:
         f"{sum(values) / len(values):.1f}%",
         f"{max(values):.1f}%",
     )
-
-
-def _sparkline_panel(samples: list[db.Sample], period: str) -> Panel:
-    values = [s.percentage for s in samples if s.percentage is not None]
-
-    if not values:
-        return Panel("No percentage data available to plot.", title="CLI graph")
-
-    values = _downsample(values, target=60)
-    spark = _sparkline(values)
-    return Panel.fit(
-        spark,
-        title=f"CLI graph ({period.replace('_', ' ')})",
-        subtitle="shows % range across window",
-        box=box.SIMPLE,
-    )
-
-
-def _downsample(values: list[float], target: int) -> list[float]:
-    if len(values) <= target:
-        return values
-    step = len(values) / target
-    return [values[int(i * step)] for i in range(target)]
-
-
-def _sparkline(values: list[float]) -> str:
-    chars = " .:-=+*#%@"
-    min_v = min(values)
-    max_v = max(values)
-    span = max(max_v - min_v, 1e-9)
-
-    def to_char(val: float) -> str:
-        idx = int((val - min_v) / span * (len(chars) - 1))
-        return chars[min(idx, len(chars) - 1)]
-
-    line = "".join(to_char(v) for v in values)
-    return f"{min_v:.0f}% {line} {max_v:.0f}%"
 
 
 def _format_number(value: Optional[float]) -> str:

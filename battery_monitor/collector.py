@@ -50,7 +50,7 @@ def collect_once(
         sample = db.create_sample_from_reading(reading, ts=ts)
         db.insert_sample(resolved_db, sample)
         log.info(
-            "Recorded sample for %s: percent=%.2f health=%.2f",
+            "Logged record for %s: percent=%.2f health=%.2f",
             path.name,
             (sample.percentage or 0.0),
             (sample.health_pct or 0.0),

@@ -1,11 +1,11 @@
 # Battery Monitor
 
-Battery collector + graphing tools for Linux (tested on NixOS). Collects battery metrics from `/sys/class/power_supply`, stores them in SQLite, and provides quick plotting for the last hour/day/week/month.
+Battery collector + graph/report tools for Linux (tested on NixOS). Collects battery metrics from `/sys/class/power_supply`, stores the records in SQLite, and provides quick graphs/reports for the last hour/day/week/month.
 
 ## Features
 - Collect energy/percentage/health for each battery detected in sysfs
 - SQLite storage with optional CSV export via `sqlite3`
-- CLI: `battery-monitor-collect` and `battery-monitor-graph`
+- CLI: `battery-monitor-collect` and `battery-monitor-graph` (graph + report)
 - systemd service + timer for periodic sampling
 - Nix flake for installation and dev shell
 
@@ -13,7 +13,7 @@ Battery collector + graphing tools for Linux (tested on NixOS). Collects battery
 ```bash
 nix run . -- collect --help
 nix run . -- collect                  # one-shot collection
-nix run . -- graph --period last_day --output battery.png
+nix run . -- graph --timeframe last_day --output battery.png
 ```
 
 ## Database location
@@ -43,14 +43,14 @@ battery-monitor-collect
 # Collect repeatedly (60s interval)
 battery-monitor-collect --interval 60
 
-# Graph last day and save to png
-battery-monitor-graph --period last_day --output ~/battery-day.png
+# Graph/report last day and save to png
+battery-monitor-graph --timeframe last_day --output ~/battery-day.png
 
-# Graph last hour and show interactively
-battery-monitor-graph --period last_hour --show
+# Graph/report last hour and show interactively
+battery-monitor-graph --timeframe last_hour --show
 ```
 
-Supported periods: `last_hour`, `last_day`, `last_week`, `last_month`, `all`.
+Supported timeframes (`--timeframe`): `last_hour`, `last_day`, `last_week`, `last_month`, `all`.
 
 ## Development
 ```bash
@@ -68,5 +68,5 @@ If you use fish, add `direnv hook fish | source` to your config so the direnv in
 
 ## Notes
 - Reads battery info from `/sys/class/power_supply/BAT*`
-- If you have multiple batteries, each sample is stored with its sysfs path (`source_path` column)
+- If you have multiple batteries, each record is stored with its sysfs path (`source_path` column)
 - SQLite schema is defined in `battery_monitor/db.py`
