@@ -70,5 +70,5 @@ If you use fish, add `direnv hook fish | source` to your config so the direnv in
 
 ## Notes
 - Reads battery info from `/sys/class/power_supply/BAT*`
-- If you have multiple batteries, each record is stored with its sysfs path (`source_path` column)
+- If you have multiple batteries, each record is stored with its sysfs path (`source_path` column) and reports aggregate the totals per collection
 - SQLite schema is defined in `battery_monitor/db.py`

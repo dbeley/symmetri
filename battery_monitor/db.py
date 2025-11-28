@@ -84,6 +84,19 @@ def count_samples(db_path: Path, since_ts: Optional[float] = None) -> int:
         return int(count)
 
 
+def count_events(db_path: Path, since_ts: Optional[float] = None) -> int:
+    with sqlite3.connect(db_path) as conn:
+        if since_ts is None:
+            (count,) = conn.execute(
+                "SELECT COUNT(DISTINCT ts) FROM samples"
+            ).fetchone()
+        else:
+            (count,) = conn.execute(
+                "SELECT COUNT(DISTINCT ts) FROM samples WHERE ts >= ?", (since_ts,)
+            ).fetchone()
+        return int(count)
+
+
 def _row_to_sample(row: sqlite3.Row) -> Sample:
     return Sample(
         ts=row["ts"],
@@ -111,6 +124,15 @@ def fetch_samples(db_path: Path, since_ts: Optional[float] = None) -> Iterator[S
             yield _row_to_sample(row)
 
 
+def fetch_samples_for_timestamp(db_path: Path, ts: float) -> list[Sample]:
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM samples WHERE ts = ? ORDER BY source_path", (ts,)
+        ).fetchall()
+        return [_row_to_sample(row) for row in rows]
+
+
 def fetch_first_sample(db_path: Path) -> Optional[Sample]:
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -132,6 +154,50 @@ def fetch_recent_samples(db_path: Path, limit: int = 5) -> list[Sample]:
             "SELECT * FROM samples ORDER BY ts DESC LIMIT ?", (limit,)
         ).fetchall()
         return [_row_to_sample(row) for row in rows]
+
+
+def fetch_first_event(db_path: Path) -> list[Sample]:
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT ts FROM samples ORDER BY ts ASC LIMIT 1").fetchone()
+        if not row:
+            return []
+        ts = row["ts"]
+        rows = conn.execute(
+            "SELECT * FROM samples WHERE ts = ? ORDER BY source_path", (ts,)
+        ).fetchall()
+        return [_row_to_sample(sample_row) for sample_row in rows]
+
+
+def fetch_latest_event(db_path: Path) -> list[Sample]:
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT ts FROM samples ORDER BY ts DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return []
+        ts = row["ts"]
+        rows = conn.execute(
+            "SELECT * FROM samples WHERE ts = ? ORDER BY source_path", (ts,)
+        ).fetchall()
+        return [_row_to_sample(sample_row) for sample_row in rows]
+
+
+def fetch_recent_events(db_path: Path, limit: int = 5) -> list[list[Sample]]:
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        ts_rows = conn.execute(
+            "SELECT ts FROM samples GROUP BY ts ORDER BY ts DESC LIMIT ?", (limit,)
+        ).fetchall()
+        events: list[list[Sample]] = []
+        for ts_row in ts_rows:
+            rows = conn.execute(
+                "SELECT * FROM samples WHERE ts = ? ORDER BY source_path",
+                (ts_row["ts"],),
+            ).fetchall()
+            events.append([_row_to_sample(sample_row) for sample_row in rows])
+        return events
 
 
 def create_sample_from_reading(reading, ts: Optional[float] = None) -> Sample:

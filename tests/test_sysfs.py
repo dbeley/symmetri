@@ -38,3 +38,24 @@ def test_read_battery(tmp_path: Path):
     assert round(reading.health_pct, 2) == round(80 / 90 * 100, 2)
     assert reading.capacity_pct == 95
     assert reading.status == "Discharging"
+
+
+def test_read_battery_uses_charge_and_voltage(tmp_path: Path):
+    bat = tmp_path / "BAT0"
+    bat.mkdir()
+    _write(bat / "type", "Battery\n")
+    _write(bat / "charge_now", "2000000\n")  # µAh
+    _write(bat / "charge_full", "4000000\n")  # µAh
+    _write(bat / "charge_full_design", "4500000\n")  # µAh
+    _write(bat / "voltage_min_design", "11000000\n")  # µV
+    _write(bat / "capacity", "90\n")
+    _write(bat / "status", "Charging\n")
+
+    reading = sysfs.read_battery(bat)
+    assert reading.energy_now_wh == 22.0  # 2 Ah * 11 V
+    assert reading.energy_full_wh == 44.0
+    assert reading.energy_full_design_wh == 49.5
+    assert round(reading.percentage or 0.0, 2) == 50.0
+    assert round(reading.health_pct or 0.0, 2) == round(44 / 49.5 * 100, 2)
+    assert reading.capacity_pct == 90
+    assert reading.status == "Charging"

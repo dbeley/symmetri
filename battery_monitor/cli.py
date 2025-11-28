@@ -11,6 +11,7 @@ from rich.table import Table
 from rich import box
 
 from . import db
+from .aggregate import aggregate_group, aggregate_samples_by_timestamp
 from .collector import collect_loop, collect_once, resolve_db_path
 from .timeframe import normalize_timeframe, since_timestamp
 
@@ -96,8 +97,10 @@ def report_command(
         console.print("No records available; collect data first.")
         raise typer.Exit(code=1)
 
+    total_events = db.count_events(resolved)
     since_ts = since_timestamp(timeframe)
-    samples = list(db.fetch_samples(resolved, since_ts=since_ts))
+    raw_samples = list(db.fetch_samples(resolved, since_ts=since_ts))
+    samples = aggregate_samples_by_timestamp(raw_samples)
     if not samples:
         console.print(
             f"No records for {timeframe.replace('_', ' ')}; try a broader timeframe."
@@ -117,13 +120,19 @@ def report_command(
         from .graph import render_plot
 
         render_plot(samples, show=False, output=output_path)
-    first_sample = db.fetch_first_sample(resolved)
-    latest_sample = db.fetch_latest_sample(resolved) or samples[-1]
-    recent_samples = db.fetch_recent_samples(resolved)
+    first_event = db.fetch_first_event(resolved)
+    first_sample = aggregate_group(first_event) if first_event else None
+    latest_event = db.fetch_latest_event(resolved)
+    latest_sample = (
+        aggregate_group(latest_event) if latest_event else samples[-1]
+    )
+    recent_events = db.fetch_recent_events(resolved)
+    recent_samples = [aggregate_group(event) for event in recent_events]
     summarize(
         samples,
         timeframe,
         total_records=total_records,
+        total_events=total_events,
         first_sample=first_sample,
         latest_sample=latest_sample,
         recent_samples=recent_samples,
@@ -135,6 +144,7 @@ def summarize(
     timeframe: str,
     *,
     total_records: int,
+    total_events: int,
     first_sample: Optional[db.Sample],
     latest_sample: db.Sample,
     recent_samples: list[db.Sample],
@@ -152,7 +162,8 @@ def summarize(
     summary.add_column("Field")
     summary.add_column("Value")
     summary.add_row("Records (all)", str(total_records))
-    summary.add_row("Records (timeframe)", str(len(timeframe_samples)))
+    summary.add_row("Events (all)", str(total_events))
+    summary.add_row("Events (timeframe)", str(len(timeframe_samples)))
     first_ts = first_sample.ts if first_sample else last.ts
     summary.add_row("First record ts", _format_timestamp(first_ts))
     summary.add_row("Latest record ts", _format_timestamp(last.ts))

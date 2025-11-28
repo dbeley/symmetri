@@ -49,6 +49,23 @@ def _wh_from_energy(raw_value: Optional[float]) -> Optional[float]:
     return raw_value / 1_000_000.0
 
 
+def _energy_wh_from_charge(
+    charge_uah: Optional[float], voltage_uv: Optional[float]
+) -> Optional[float]:
+    if charge_uah is None or voltage_uv is None:
+        return None
+    # charge is in microamp-hours, voltage is in microvolts
+    return (charge_uah * voltage_uv) / 1_000_000_000_000.0
+
+
+def _read_voltage(path: Path) -> Optional[float]:
+    for name in ("voltage_now", "voltage_min_design", "voltage_max_design"):
+        value = _read_float(path / name)
+        if value is not None:
+            return value
+    return None
+
+
 def find_battery_paths(
     sysfs_root: Path = Path("/sys/class/power_supply"),
 ) -> Iterable[Path]:
@@ -63,29 +80,38 @@ def find_battery_paths(
 
 
 def read_battery(path: Path) -> BatteryReading:
-    energy_now = _read_float(path / "energy_now") or _read_float(path / "charge_now")
-    energy_full = _read_float(path / "energy_full") or _read_float(path / "charge_full")
-    energy_full_design = _read_float(path / "energy_full_design") or _read_float(
-        path / "charge_full_design"
-    )
+    energy_now_raw = _read_float(path / "energy_now")
+    energy_full_raw = _read_float(path / "energy_full")
+    energy_full_design_raw = _read_float(path / "energy_full_design")
+    charge_now = _read_float(path / "charge_now")
+    charge_full = _read_float(path / "charge_full")
+    charge_full_design = _read_float(path / "charge_full_design")
     capacity_pct = _read_float(path / "capacity")
     status = _read_str(path / "status")
+    voltage = _read_voltage(path)
 
-    energy_now_wh = _wh_from_energy(energy_now)
-    energy_full_wh = _wh_from_energy(energy_full)
-    energy_full_design_wh = _wh_from_energy(energy_full_design)
+    energy_now_wh = _wh_from_energy(energy_now_raw)
+    energy_full_wh = _wh_from_energy(energy_full_raw)
+    energy_full_design_wh = _wh_from_energy(energy_full_design_raw)
+
+    if energy_now_wh is None:
+        energy_now_wh = _energy_wh_from_charge(charge_now, voltage)
+    if energy_full_wh is None:
+        energy_full_wh = _energy_wh_from_charge(charge_full, voltage)
+    if energy_full_design_wh is None:
+        energy_full_design_wh = _energy_wh_from_charge(charge_full_design, voltage)
 
     percentage = None
-    if energy_now is not None and energy_full:
+    if energy_now_wh is not None and energy_full_wh:
         try:
-            percentage = (energy_now / energy_full) * 100.0
+            percentage = (energy_now_wh / energy_full_wh) * 100.0
         except ZeroDivisionError:
             percentage = None
 
     health_pct = None
-    if energy_full and energy_full_design:
+    if energy_full_wh and energy_full_design_wh:
         try:
-            health_pct = (energy_full / energy_full_design) * 100.0
+            health_pct = (energy_full_wh / energy_full_design_wh) * 100.0
         except ZeroDivisionError:
             health_pct = None
 

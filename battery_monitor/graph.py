@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from . import db
+from .aggregate import aggregate_samples_by_timestamp
 from .timeframe import timeframe_seconds
 
 log = logging.getLogger(__name__)
@@ -15,7 +16,8 @@ log = logging.getLogger(__name__)
 def load_series(db_path: Path, timeframe: str) -> list[db.Sample]:
     seconds = timeframe_seconds(timeframe)
     since_ts = time.time() - seconds if seconds is not None else None
-    return list(db.fetch_samples(db_path, since_ts=since_ts))
+    raw_samples = db.fetch_samples(db_path, since_ts=since_ts)
+    return aggregate_samples_by_timestamp(raw_samples)
 
 
 def render_plot(
