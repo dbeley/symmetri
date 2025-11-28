@@ -2,7 +2,7 @@
   description = "Battery monitor for Linux/NixOS";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -10,31 +10,36 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        pythonPackages = pkgs.python3Packages;
-        app = pythonPackages.buildPythonApplication {
+        app = pkgs.rustPlatform.buildRustPackage {
           pname = "battery-monitor";
-          version = "0.1.0";
-          format = "pyproject";
+          version = "0.2.0";
           src = ./.;
-          nativeBuildInputs = [ pythonPackages.hatchling ];
-          propagatedBuildInputs = with pythonPackages; [ typer rich matplotlib ];
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+          };
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.fontconfig ];
         };
       in {
         packages.default = app;
         apps.default = flake-utils.lib.mkApp { drv = app; };
         devShells.default = pkgs.mkShell {
           shell = pkgs.fish;
+          inputsFrom = [ app ];
           buildInputs = [
-            pkgs.python3
+            pkgs.rustc
+            pkgs.cargo
+            pkgs.clippy
+            pkgs.rustfmt
+            pkgs.gcc
+            pkgs.pkg-config
+            pkgs.fontconfig
             pkgs.pre-commit
-            pkgs.ruff
             pkgs.typos
-            pythonPackages.hatchling
-            pythonPackages.typer
-            pythonPackages.rich
-            pythonPackages.matplotlib
-            pythonPackages.pytest
           ];
+          shellHook = ''
+            export RUST_LOG=info
+          '';
         };
       });
 }
