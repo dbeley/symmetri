@@ -2,7 +2,7 @@
   description = "Battery monitor for Linux/NixOS";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -34,6 +34,7 @@
             pythonPackages.rich
             pythonPackages.matplotlib
             pythonPackages.pytest
+            pkgs.hyperfine
           ];
         };
       });
