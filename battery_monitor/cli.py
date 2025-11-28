@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, TYPE_CHECKING
 
 import typer
 from rich.console import Console
@@ -12,7 +12,9 @@ from rich import box
 
 from . import db
 from .collector import collect_loop, collect_once, resolve_db_path
-from .graph import load_series, render_plot
+
+if TYPE_CHECKING:
+    pass
 
 app = typer.Typer(
     add_completion=False,
@@ -85,6 +87,9 @@ def report_command(
 ) -> None:
     """Render a timeframe report (optionally save a graph image)."""
     configure_logging(verbose)
+    # Import graphing only when needed to keep the fast path for collection light.
+    from .graph import load_series, render_plot
+
     resolved = resolve_db_path(db_path)
 
     all_samples = list(db.fetch_samples(resolved))

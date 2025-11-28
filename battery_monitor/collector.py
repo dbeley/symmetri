@@ -45,13 +45,17 @@ def collect_once(
         return 1
 
     ts = time.time()
+    samples = []
     for path in battery_paths:
         reading = read_battery(path)
-        sample = db.create_sample_from_reading(reading, ts=ts)
-        db.insert_sample(resolved_db, sample)
+        samples.append(db.create_sample_from_reading(reading, ts=ts))
+
+    db.insert_samples(resolved_db, samples)
+
+    for sample in samples:
         log.info(
             "Logged record for %s: percent=%.2f health=%.2f",
-            path.name,
+            Path(sample.source_path).name,
             (sample.percentage or 0.0),
             (sample.health_pct or 0.0),
         )

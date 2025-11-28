@@ -4,7 +4,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterable, Iterator, Optional
 
 
 @dataclass
@@ -43,8 +43,12 @@ def init_db(db_path: Path) -> None:
 
 
 def insert_sample(db_path: Path, sample: Sample) -> None:
+    insert_samples(db_path, [sample])
+
+
+def insert_samples(db_path: Path, samples: Iterable[Sample]) -> None:
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
+        conn.executemany(
             """
             INSERT INTO samples (
                 ts, percentage, capacity_pct, health_pct, energy_now_wh,
@@ -52,15 +56,18 @@ def insert_sample(db_path: Path, sample: Sample) -> None:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                sample.ts,
-                sample.percentage,
-                sample.capacity_pct,
-                sample.health_pct,
-                sample.energy_now_wh,
-                sample.energy_full_wh,
-                sample.energy_full_design_wh,
-                sample.status,
-                sample.source_path,
+                (
+                    sample.ts,
+                    sample.percentage,
+                    sample.capacity_pct,
+                    sample.health_pct,
+                    sample.energy_now_wh,
+                    sample.energy_full_wh,
+                    sample.energy_full_design_wh,
+                    sample.status,
+                    sample.source_path,
+                )
+                for sample in samples
             ),
         )
         conn.commit()
