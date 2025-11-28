@@ -11,7 +11,7 @@
 - `nix run . -- collect --help`: show CLI help; swap `--help` for `collect` or `report` to run.
 - `python -m pytest` (inside dev shell) or `nix develop -c pytest`: run tests.
 - `nix develop -c pre-commit run --all-files`: lint (ruff) + spell-check (typos) before commits.
-- `battery-monitor-report --timeframe last_day --graph`: smoke test reporting when a DB exists.
+- `battery-monitor-report --days 1 --graph`: smoke test reporting when a DB exists.
 
 ## Coding Style & Naming Conventions
 - Python 3.10+, 4-space indentation, type hints preferred; keep modules single-purpose.

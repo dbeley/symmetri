@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable, Optional, TYPE_CHECKING
 
@@ -13,7 +13,7 @@ from rich import box
 from . import db
 from .aggregate import aggregate_group, aggregate_samples_by_timestamp
 from .collector import collect_loop, collect_once, resolve_db_path
-from .timeframe import normalize_timeframe, since_timestamp
+from .timeframe import Timeframe, build_timeframe, since_timestamp
 
 if TYPE_CHECKING:
     pass
@@ -70,9 +70,28 @@ def collect_command(
 
 @app.command("report")
 def report_command(
-    timeframe: str = typer.Option(
-        "last_day",
-        help="Timeframe: last_1h, last_3h, last_12h, last_day, last_week, last_year, all",
+    hours: int = typer.Option(
+        6,
+        "--hours",
+        min=1,
+        help="Window in hours (used when days/months are zero)",
+    ),
+    days: int = typer.Option(
+        0,
+        "--days",
+        min=0,
+        help="Window in days (overrides hours when non-zero)",
+    ),
+    months: int = typer.Option(
+        0,
+        "--months",
+        min=0,
+        help="Window in months (~30d each; overrides days/hours when non-zero)",
+    ),
+    all_time: bool = typer.Option(
+        False,
+        "--all",
+        help="Ignore timeframe limits and use the entire history",
     ),
     db_path: Optional[Path] = typer.Option(
         None, help="Path to SQLite database (or set BATTERY_MONITOR_DB)"
@@ -90,6 +109,12 @@ def report_command(
     """Render a timeframe report (optionally save a graph image)."""
     configure_logging(verbose)
 
+    timeframe = build_timeframe(
+        hours=hours,
+        days=days,
+        months=months,
+        all_time=all_time,
+    )
     resolved = resolve_db_path(db_path)
 
     total_records = db.count_samples(resolved)
@@ -103,7 +128,7 @@ def report_command(
     samples = aggregate_samples_by_timestamp(raw_samples)
     if not samples:
         console.print(
-            f"No records for {timeframe.replace('_', ' ')}; try a broader timeframe."
+            f"No records for {timeframe.label.replace('_', ' ')}; try a broader timeframe."
         )
         raise typer.Exit(code=1)
 
@@ -111,7 +136,7 @@ def report_command(
     if graph_path:
         output_path = graph_path
     elif graph:
-        output_path = _default_graph_path(timeframe)
+        output_path = _default_graph_path(timeframe.label)
     else:
         output_path = None
 
@@ -119,13 +144,11 @@ def report_command(
         # Import matplotlib lazily only when we actually render a graph.
         from .graph import render_plot
 
-        render_plot(samples, show=False, output=output_path)
+        render_plot(samples, timeframe, show=False, output=output_path)
     first_event = db.fetch_first_event(resolved)
     first_sample = aggregate_group(first_event) if first_event else None
     latest_event = db.fetch_latest_event(resolved)
-    latest_sample = (
-        aggregate_group(latest_event) if latest_event else samples[-1]
-    )
+    latest_sample = aggregate_group(latest_event) if latest_event else samples[-1]
     recent_events = db.fetch_recent_events(resolved)
     recent_samples = [aggregate_group(event) for event in recent_events]
     summarize(
@@ -141,7 +164,7 @@ def report_command(
 
 def summarize(
     timeframe_samples: Iterable[db.Sample],
-    timeframe: str,
+    timeframe: Timeframe,
     *,
     total_records: int,
     total_events: int,
@@ -151,7 +174,7 @@ def summarize(
 ) -> None:
     timeframe_samples = list(timeframe_samples)
     last = latest_sample
-    timeframe_label = normalize_timeframe(timeframe).replace("_", " ")
+    timeframe_label = timeframe.label.replace("_", " ")
 
     summary = Table(
         title="Database stats",
@@ -228,15 +251,15 @@ def _recent_table(samples: list[db.Sample]) -> Table:
     return recent
 
 
-def _timeframe_report_table(timeframe: str, samples: list[db.Sample]) -> Table:
-    normalized = normalize_timeframe(timeframe)
+def _timeframe_report_table(timeframe: Timeframe, samples: list[db.Sample]) -> Table:
+    bucket_seconds = _bucket_span_seconds(timeframe)
     buckets: dict[datetime, list[db.Sample]] = {}
     for sample in samples:
-        bucket_key = _bucket_start(sample.ts, normalized)
+        bucket_key = _bucket_start(sample.ts, bucket_seconds)
         buckets.setdefault(bucket_key, []).append(sample)
 
     report = Table(
-        title=f"{normalized.replace('_', ' ').title()} timeframe report",
+        title=f"{timeframe.label.replace('_', ' ').title()} timeframe report",
         show_lines=False,
         box=box.SIMPLE,
         header_style="bold",
@@ -249,7 +272,7 @@ def _timeframe_report_table(timeframe: str, samples: list[db.Sample]) -> Table:
     report.add_column("Latest status", no_wrap=True)
 
     for bucket_start in sorted(buckets):
-        window_label = _format_bucket(bucket_start, normalized)
+        window_label = _format_bucket(bucket_start, bucket_seconds)
         bucket_samples = buckets[bucket_start]
         pct_values = [s.percentage for s in bucket_samples if s.percentage is not None]
         min_pct, avg_pct, max_pct = _pct_stats(pct_values)
@@ -265,30 +288,43 @@ def _timeframe_report_table(timeframe: str, samples: list[db.Sample]) -> Table:
     return report
 
 
-def _bucket_start(ts: float, timeframe: str) -> datetime:
-    dt = datetime.fromtimestamp(ts).astimezone()
-    if timeframe == "last_1h":
-        minute_bucket = (dt.minute // 5) * 5
-        return dt.replace(minute=minute_bucket, second=0, microsecond=0)
-    if timeframe == "last_3h":
-        minute_bucket = (dt.minute // 15) * 15
-        return dt.replace(minute=minute_bucket, second=0, microsecond=0)
-    if timeframe == "last_12h":
-        return dt.replace(minute=0, second=0, microsecond=0)
-    if timeframe == "last_day":
-        return dt.replace(minute=0, second=0, microsecond=0)
-    if timeframe == "last_week":
-        hour_bucket = (dt.hour // 14) * 14
-        return dt.replace(hour=hour_bucket, minute=0, second=0, microsecond=0)
-    return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+def _bucket_span_seconds(timeframe: Timeframe) -> int:
+    """Choose an interval that keeps the table readable for the requested window."""
+    window = timeframe.seconds
+    if window is None:
+        return 7 * 24 * 3600  # weekly buckets for all history
+    if window <= 6 * 3600:
+        return 20 * 60
+    if window <= 24 * 3600:
+        return 3600
+    if window <= 3 * 24 * 3600:
+        return 2 * 3600
+    if window <= 7 * 24 * 3600:
+        return 6 * 3600
+    if window <= 30 * 24 * 3600:
+        return 24 * 3600
+    if window <= 90 * 24 * 3600:
+        return 3 * 24 * 3600
+    return 7 * 24 * 3600
 
 
-def _format_bucket(dt: datetime, timeframe: str) -> str:
-    if timeframe in {"last_1h", "last_3h"}:
+def _bucket_start(ts: float, bucket_seconds: int) -> datetime:
+    local = datetime.fromtimestamp(ts).astimezone()
+    offset = local.utcoffset() or timedelta(0)
+    bucket_epoch = int((ts + offset.total_seconds()) // bucket_seconds) * bucket_seconds
+    aligned = bucket_epoch - offset.total_seconds()
+    return datetime.fromtimestamp(aligned, tz=local.tzinfo)
+
+
+def _format_bucket(dt: datetime, bucket_seconds: int) -> str:
+    if bucket_seconds < 3600:
         return dt.strftime("%m-%d %H:%M")
-    if timeframe in {"last_12h", "last_day", "last_week"}:
+    if bucket_seconds < 24 * 3600:
         return dt.strftime("%m-%d %H:00")
-    return dt.strftime("%Y-%m-%d")
+    days = bucket_seconds // (24 * 3600)
+    if days <= 1:
+        return dt.strftime("%Y-%m-%d")
+    return f"{dt.strftime('%Y-%m-%d')} (+{days}d)"
 
 
 def _pct_stats(values: list[float]) -> tuple[str, str, str]:

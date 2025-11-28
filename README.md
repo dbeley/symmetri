@@ -1,6 +1,6 @@
 # Battery Monitor
 
- Battery collector + graph/report tools for Linux (tested on NixOS). Collects battery metrics from `/sys/class/power_supply`, stores the records in SQLite, and provides quick graphs/reports for the last 1h/3h/12h/day/week.
+ Battery collector + graph/report tools for Linux (tested on NixOS). Collects battery metrics from `/sys/class/power_supply`, stores the records in SQLite, and provides quick graphs/reports for configurable hour/day/month windows (default: last 6 hours) or all history.
 
 ## Features
 - Collect energy/percentage/health for each battery detected in sysfs
@@ -44,15 +44,18 @@ battery-monitor-collect
 battery-monitor-collect --interval 60
 
 # Report last day and save graph with an auto-generated name in the cwd
-battery-monitor-report --timeframe last_day --graph
+battery-monitor-report --days 1 --graph
 
 # Report last week and send the graph to a specific path
-battery-monitor-report --timeframe last_week --graph-path ~/battery-week.png
+battery-monitor-report --days 7 --graph-path ~/battery-week.png
 ```
 
-Use `--graph` to save a graph image with an informative filename (timeframe, record count, timestamp, timezone) in the current directory. Use `--graph-path` to choose the exact destination; without either flag the command prints only the textual report.
+Use `--graph` to save a graph image with an informative filename (timeframe selection, record count, timestamp, timezone) in the current directory. Use `--graph-path` to choose the exact destination; without either flag the command prints only the textual report.
 
-Supported timeframes (`--timeframe`): `last_1h`, `last_3h`, `last_12h`, `last_day`, `last_week`, `last_year`, `all`.
+Timeframe controls:
+- `--hours N` (default 6) when `--days/--months` are zero
+- `--days N` overrides hours; `--months N` (~30 days each) overrides both
+- `--all` shows the full history
 
 ## Development
 ```bash

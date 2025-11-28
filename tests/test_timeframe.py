@@ -1,31 +1,51 @@
 import pytest
 
-from battery_monitor.timeframe import since_timestamp, timeframe_seconds
+from battery_monitor.timeframe import (
+    APPROX_DAYS_PER_MONTH,
+    SECONDS_PER_DAY,
+    SECONDS_PER_HOUR,
+    build_timeframe,
+    since_timestamp,
+)
 
 
-def test_timeframe_seconds_supports_last_hour():
-    assert timeframe_seconds("last_1h") == 3600
-    assert timeframe_seconds("last-1h") == 3600
+def test_default_timeframe_is_last_six_hours():
+    timeframe = build_timeframe()
+
+    assert timeframe.hours == 6
+    assert timeframe.seconds == 6 * SECONDS_PER_HOUR
+    assert timeframe.label == "last_6_hours"
 
 
-def test_timeframe_seconds_supports_long_ranges():
-    day_seconds = 86400
-    assert timeframe_seconds("last_year") == 365 * day_seconds
-    assert timeframe_seconds("all") is None
+def test_days_and_months_take_precedence_over_hours():
+    timeframe_days = build_timeframe(hours=2, days=1)
+    timeframe_months = build_timeframe(hours=2, days=2, months=1)
+
+    assert timeframe_days.days == 1
+    assert timeframe_days.seconds == SECONDS_PER_DAY
+    assert timeframe_days.label == "last_1_day"
+
+    assert timeframe_months.months == 1
+    assert timeframe_months.seconds == APPROX_DAYS_PER_MONTH * SECONDS_PER_DAY
+    assert timeframe_months.label == "last_1_month"
 
 
 def test_since_timestamp_uses_reference_now():
     now = 1_700_000_000.0
-    assert since_timestamp("last_1h", now=now) == now - 3600
+    timeframe = build_timeframe(hours=1)
+
+    assert since_timestamp(timeframe, now=now) == now - SECONDS_PER_HOUR
 
 
 def test_since_timestamp_allows_unbounded():
-    assert since_timestamp("all") is None
+    timeframe = build_timeframe(all_time=True)
+
+    assert since_timestamp(timeframe) is None
+    assert timeframe.label == "all"
 
 
-def test_timeframe_seconds_rejects_removed_alias():
+def test_invalid_inputs_raise():
     with pytest.raises(ValueError):
-        timeframe_seconds("max")
-
+        build_timeframe(hours=0)
     with pytest.raises(ValueError):
-        since_timestamp("max")
+        build_timeframe(days=-1)

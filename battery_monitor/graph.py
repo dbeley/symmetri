@@ -1,27 +1,29 @@
 from __future__ import annotations
 
 import logging
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
 from . import db
 from .aggregate import aggregate_samples_by_timestamp
-from .timeframe import timeframe_seconds
+from .timeframe import Timeframe
 
 log = logging.getLogger(__name__)
 
 
-def load_series(db_path: Path, timeframe: str) -> list[db.Sample]:
-    seconds = timeframe_seconds(timeframe)
-    since_ts = time.time() - seconds if seconds is not None else None
+def load_series(db_path: Path, timeframe: Timeframe) -> list[db.Sample]:
+    since_ts = timeframe.since_timestamp()
     raw_samples = db.fetch_samples(db_path, since_ts=since_ts)
     return aggregate_samples_by_timestamp(raw_samples)
 
 
 def render_plot(
-    samples: Iterable[db.Sample], *, show: bool, output: Optional[Path]
+    samples: Iterable[db.Sample],
+    timeframe: Timeframe,
+    *,
+    show: bool,
+    output: Optional[Path],
 ) -> None:
     import matplotlib
 
@@ -59,7 +61,8 @@ def render_plot(
     ax.set_xlabel("Time")
     ax.set_ylabel("Percent")
     ax.set_ylim(0, 110)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d %H:%M"))
+    date_format = _date_format(timeframe)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter(date_format))
     fig.autofmt_xdate()
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend()
@@ -73,3 +76,14 @@ def render_plot(
         plt.show()
     else:
         plt.close(fig)
+
+
+def _date_format(timeframe: Timeframe) -> str:
+    window = timeframe.seconds
+    if window is None or window > 90 * 24 * 3600:
+        return "%Y-%m-%d"
+    if window > 7 * 24 * 3600:
+        return "%m-%d"
+    if window > 24 * 3600:
+        return "%m-%d %H:00"
+    return "%m-%d %H:%M"
