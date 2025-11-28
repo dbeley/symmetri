@@ -16,6 +16,7 @@ def timeframe_seconds(timeframe: str) -> Optional[float]:
         "last_12h": 12 * 3600,
         "last_day": 86400,
         "last_week": 7 * 86400,
+        "last_year": 365 * 86400,
         "all": None,
     }
     if normalized not in mapping:

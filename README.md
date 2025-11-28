@@ -52,7 +52,7 @@ battery-monitor-report --timeframe last_week --graph-path ~/battery-week.png
 
 Use `--graph` to save a graph image with an informative filename (timeframe, record count, timestamp, timezone) in the current directory. Use `--graph-path` to choose the exact destination; without either flag the command prints only the textual report.
 
-Supported timeframes (`--timeframe`): `last_1h`, `last_3h`, `last_12h`, `last_day`, `last_week`, `all`.
+Supported timeframes (`--timeframe`): `last_1h`, `last_3h`, `last_12h`, `last_day`, `last_week`, `last_year`, `all`.
 
 ## Development
 ```bash

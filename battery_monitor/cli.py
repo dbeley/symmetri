@@ -72,7 +72,7 @@ def collect_command(
 def report_command(
     timeframe: str = typer.Option(
         "last_day",
-        help="Timeframe: last_1h, last_3h, last_12h, last_day, last_week, all",
+        help="Timeframe: last_1h, last_3h, last_12h, last_day, last_week, last_year, all",
     ),
     db_path: Optional[Path] = typer.Option(
         None, help="Path to SQLite database (or set BATTERY_MONITOR_DB)"
