@@ -87,9 +87,7 @@ def count_samples(db_path: Path, since_ts: Optional[float] = None) -> int:
 def count_events(db_path: Path, since_ts: Optional[float] = None) -> int:
     with sqlite3.connect(db_path) as conn:
         if since_ts is None:
-            (count,) = conn.execute(
-                "SELECT COUNT(DISTINCT ts) FROM samples"
-            ).fetchone()
+            (count,) = conn.execute("SELECT COUNT(DISTINCT ts) FROM samples").fetchone()
         else:
             (count,) = conn.execute(
                 "SELECT COUNT(DISTINCT ts) FROM samples WHERE ts >= ?", (since_ts,)
@@ -115,12 +113,12 @@ def fetch_samples(db_path: Path, since_ts: Optional[float] = None) -> Iterator[S
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         if since_ts is None:
-            rows = conn.execute("SELECT * FROM samples ORDER BY ts").fetchall()
+            cursor = conn.execute("SELECT * FROM samples ORDER BY ts")
         else:
-            rows = conn.execute(
+            cursor = conn.execute(
                 "SELECT * FROM samples WHERE ts >= ? ORDER BY ts", (since_ts,)
-            ).fetchall()
-        for row in rows:
+            )
+        for row in cursor:
             yield _row_to_sample(row)
 
 
@@ -172,9 +170,7 @@ def fetch_first_event(db_path: Path) -> list[Sample]:
 def fetch_latest_event(db_path: Path) -> list[Sample]:
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT ts FROM samples ORDER BY ts DESC LIMIT 1"
-        ).fetchone()
+        row = conn.execute("SELECT ts FROM samples ORDER BY ts DESC LIMIT 1").fetchone()
         if not row:
             return []
         ts = row["ts"]

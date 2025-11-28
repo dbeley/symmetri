@@ -59,3 +59,29 @@ def test_read_battery_uses_charge_and_voltage(tmp_path: Path):
     assert round(reading.health_pct or 0.0, 2) == round(44 / 49.5 * 100, 2)
     assert reading.capacity_pct == 90
     assert reading.status == "Charging"
+
+
+def test_read_battery_prefers_uevent_when_available(tmp_path: Path):
+    bat = tmp_path / "BAT2"
+    bat.mkdir()
+    _write(
+        bat / "uevent",
+        "\n".join(
+            [
+                "POWER_SUPPLY_ENERGY_NOW=30000000",
+                "POWER_SUPPLY_ENERGY_FULL=60000000",
+                "POWER_SUPPLY_ENERGY_FULL_DESIGN=80000000",
+                "POWER_SUPPLY_CAPACITY=85",
+                "POWER_SUPPLY_STATUS=Discharging",
+            ]
+        ),
+    )
+
+    reading = sysfs.read_battery(bat)
+    assert reading.energy_now_wh == 30.0
+    assert reading.energy_full_wh == 60.0
+    assert reading.energy_full_design_wh == 80.0
+    assert round(reading.percentage or 0.0, 2) == 50.0
+    assert round(reading.health_pct or 0.0, 2) == round(60 / 80 * 100, 2)
+    assert reading.capacity_pct == 85
+    assert reading.status == "Discharging"

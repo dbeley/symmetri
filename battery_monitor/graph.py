@@ -43,12 +43,14 @@ def render_plot(
         # matplotlib 3.8 dropped mdates.epoch2num; date2num keeps behavior.
         return mdates.date2num(datetime.fromtimestamp(ts, tz=timezone.utc))
 
-    percent_points = [
-        (_ts_to_num(s.ts), s.percentage) for s in samples if s.percentage is not None
-    ]
-    health_points = [
-        (_ts_to_num(s.ts), s.health_pct) for s in samples if s.health_pct is not None
-    ]
+    percent_points: list[tuple[float, float]] = []
+    health_points: list[tuple[float, float]] = []
+    for sample in samples:
+        ts_num = _ts_to_num(sample.ts)
+        if sample.percentage is not None:
+            percent_points.append((ts_num, sample.percentage))
+        if sample.health_pct is not None:
+            health_points.append((ts_num, sample.health_pct))
 
     fig, ax = plt.subplots()
     if percent_points:
@@ -57,6 +59,10 @@ def render_plot(
     if health_points:
         times_h, values_h = zip(*health_points)
         ax.plot_date(times_h, values_h, "-o", label="Health %", color="tab:orange")
+    if not percent_points and not health_points:
+        log.warning("No charge or health values present to plot")
+        plt.close(fig)
+        return
 
     ax.set_xlabel("Time")
     ax.set_ylabel("Percent")

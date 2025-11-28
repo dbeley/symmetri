@@ -1,20 +1,32 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from pathlib import Path
+from operator import attrgetter
 from typing import Iterable
 
 from .db import Sample
 
 
 def _sum_or_none(values: Iterable[float | None]) -> float | None:
-    present = [value for value in values if value is not None]
-    return sum(present) if present else None
+    total = 0.0
+    has_value = False
+    for value in values:
+        if value is None:
+            continue
+        total += value
+        has_value = True
+    return total if has_value else None
 
 
 def _avg_or_none(values: Iterable[float | None]) -> float | None:
-    present = [value for value in values if value is not None]
-    return sum(present) / len(present) if present else None
+    total = 0.0
+    count = 0
+    for value in values:
+        if value is None:
+            continue
+        total += value
+        count += 1
+    return (total / count) if count else None
 
 
 def _percent(numerator: float | None, denominator: float | None) -> float | None:
@@ -68,10 +80,23 @@ def aggregate_group(samples: Iterable[Sample]) -> Sample:
 
 
 def aggregate_samples_by_timestamp(samples: Iterable[Sample]) -> list[Sample]:
-    buckets: dict[float, list[Sample]] = defaultdict(list)
-    for sample in samples:
-        buckets[sample.ts].append(sample)
-    aggregated = [
-        aggregate_group(buckets[bucket_ts]) for bucket_ts in sorted(buckets.keys())
-    ]
+    sample_list = list(samples)
+    if not sample_list:
+        return []
+
+    if len(sample_list) > 1:
+        sample_list.sort(key=attrgetter("ts"))
+
+    aggregated: list[Sample] = []
+    current_ts = sample_list[0].ts
+    bucket: list[Sample] = []
+
+    for sample in sample_list:
+        if sample.ts != current_ts:
+            aggregated.append(aggregate_group(bucket))
+            bucket = []
+            current_ts = sample.ts
+        bucket.append(sample)
+
+    aggregated.append(aggregate_group(bucket))
     return aggregated
