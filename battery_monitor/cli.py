@@ -4,7 +4,7 @@ import logging
 import math
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Optional, TYPE_CHECKING
+from typing import Callable, Iterable, Optional, TYPE_CHECKING
 
 import typer
 from rich.console import Console
@@ -173,8 +173,9 @@ def summarize(
     timeframe_samples = list(timeframe_samples)
     last = latest_sample
     timeframe_label = timeframe.label.replace("_", " ")
-    avg_consumption_w = _average_consumption_w(timeframe_samples)
-    est_runtime_hours = _estimate_runtime_hours(avg_consumption_w, current_sample=last)
+    avg_discharge_w = _average_discharge_w(timeframe_samples)
+    avg_charge_w = _average_charge_w(timeframe_samples)
+    est_runtime_hours = _estimate_runtime_hours(avg_discharge_w, current_sample=last)
 
     summary = Table(
         title="Database stats",
@@ -190,7 +191,8 @@ def summarize(
     summary.add_row("Latest record ts", _format_timestamp(last.ts))
     summary.add_row("Timeframe window", timeframe_label)
     summary.add_row("Latest status", last.status or "unknown")
-    summary.add_row("Avg consumption", _format_power(avg_consumption_w))
+    summary.add_row("Avg discharge power", _format_power(avg_discharge_w))
+    summary.add_row("Avg charge power", _format_power(avg_charge_w))
     summary.add_row("Est runtime (full)", _format_runtime(est_runtime_hours))
     console.print(summary)
 
@@ -281,7 +283,8 @@ def _timeframe_report_table(timeframe: Timeframe, samples: list[db.Sample]) -> T
     report.add_column("Min %", justify="right")
     report.add_column("Avg %", justify="right")
     report.add_column("Max %", justify="right")
-    report.add_column("Avg W", justify="right")
+    report.add_column("Avg discharge W", justify="right")
+    report.add_column("Avg charge W", justify="right")
     report.add_column("Latest status", no_wrap=True)
 
     for bucket_start in sorted(buckets):
@@ -290,14 +293,16 @@ def _timeframe_report_table(timeframe: Timeframe, samples: list[db.Sample]) -> T
         pct_values = [s.percentage for s in bucket_samples if s.percentage is not None]
         min_pct, avg_pct, max_pct = _pct_stats(pct_values)
         latest_status = bucket_samples[-1].status or "unknown"
-        avg_consumption = _average_consumption_w(bucket_samples)
+        avg_discharge = _average_discharge_w(bucket_samples)
+        avg_charge = _average_charge_w(bucket_samples)
         report.add_row(
             window_label,
             str(len(bucket_samples)),
             min_pct,
             avg_pct,
             max_pct,
-            _format_power(avg_consumption),
+            _format_power(avg_discharge),
+            _format_power(avg_charge),
             latest_status,
         )
     return report
@@ -356,9 +361,23 @@ def _format_number(value: Optional[float]) -> str:
     return f"{value:.2f}" if value is not None else "--"
 
 
-def _average_consumption_w(samples: Iterable[db.Sample]) -> Optional[float]:
+def _average_discharge_w(samples: Iterable[db.Sample]) -> Optional[float]:
+    return _average_rate_w(samples, expect_increase=False, status_check=_is_discharging)
+
+
+def _average_charge_w(samples: Iterable[db.Sample]) -> Optional[float]:
+    return _average_rate_w(samples, expect_increase=True, status_check=_is_charging)
+
+
+def _average_rate_w(
+    samples: Iterable[db.Sample],
+    *,
+    expect_increase: bool,
+    status_check: Callable[[db.Sample], bool],
+) -> Optional[float]:
     # Ignore deltas when samples are far apart (likely machine was off/asleep).
     max_gap_hours = 5 / 60  # only trust 5-minute gaps to ensure the machine was active
+
     ordered = sorted(
         (s for s in samples if s.energy_now_wh is not None),
         key=lambda sample: sample.ts,
@@ -378,27 +397,54 @@ def _average_consumption_w(samples: Iterable[db.Sample]) -> Optional[float]:
         if dt_hours > max_gap_hours:
             previous = current
             continue
+        if not (status_check(previous) and status_check(current)):
+            previous = current
+            continue
+
         delta_energy = current.energy_now_wh - previous.energy_now_wh
+        if expect_increase:
+            if delta_energy <= 0:
+                previous = current
+                continue
+        else:
+            if delta_energy >= 0:
+                previous = current
+                continue
+
         total_delta += delta_energy
         total_hours += dt_hours
         previous = current
 
-    if total_hours == 0:
+    if total_hours == 0 or total_delta == 0:
         return None
 
     avg_delta_per_hour = total_delta / total_hours
+    if expect_increase:
+        return avg_delta_per_hour  # positive when charging
     return -avg_delta_per_hour  # positive when battery drains
 
 
+def _is_discharging(sample: db.Sample) -> bool:
+    if sample.status is None:
+        return True
+    return sample.status.strip().lower() == "discharging"
+
+
+def _is_charging(sample: db.Sample) -> bool:
+    if sample.status is None:
+        return False
+    return sample.status.strip().lower() == "charging"
+
+
 def _estimate_runtime_hours(
-    avg_consumption_w: Optional[float], *, current_sample: db.Sample
+    avg_discharge_w: Optional[float], *, current_sample: db.Sample
 ) -> Optional[float]:
-    if avg_consumption_w is None or avg_consumption_w <= 0:
+    if avg_discharge_w is None or avg_discharge_w <= 0:
         return None
     capacity_wh = current_sample.energy_full_wh or current_sample.energy_full_design_wh
     if capacity_wh is None or capacity_wh <= 0:
         return None
-    return capacity_wh / avg_consumption_w
+    return capacity_wh / avg_discharge_w
 
 
 def main() -> None:

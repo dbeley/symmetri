@@ -42,9 +42,9 @@ def test_default_graph_path_has_timeframe_and_timestamp(tmp_path):
     assert path.name == "battery_monitor_last_3_hours_2025-11-28_01-30-42_UTC.png"
 
 
-def test_average_consumption_and_runtime_estimates():
+def test_average_discharge_and_runtime_estimates():
     from battery_monitor.cli import (
-        _average_consumption_w,
+        _average_discharge_w,
         _estimate_runtime_hours,
         _format_runtime,
     )
@@ -77,7 +77,7 @@ def test_average_consumption_and_runtime_estimates():
         sample(600, 59.2, energy_full=60.0, energy_full_design=70.0),
     ]
 
-    avg = _average_consumption_w(samples)
+    avg = _average_discharge_w(samples)
     runtime_hours = _estimate_runtime_hours(avg, current_sample=samples[-1])
 
     assert avg is not None
@@ -93,8 +93,8 @@ def test_average_consumption_and_runtime_estimates():
     assert round(design_runtime, 2) == 16.67
 
 
-def test_average_consumption_ignores_large_gaps():
-    from battery_monitor.cli import _average_consumption_w, _estimate_runtime_hours
+def test_average_discharge_ignores_large_gaps():
+    from battery_monitor.cli import _average_discharge_w, _estimate_runtime_hours
     from battery_monitor.db import Sample
 
     def sample(ts: float, energy_now: float) -> Sample:
@@ -116,7 +116,7 @@ def test_average_consumption_ignores_large_gaps():
         sample(1800, 59.4),  # 25m gap should be ignored with the tighter window
     ]
 
-    avg = _average_consumption_w(samples)
+    avg = _average_discharge_w(samples)
 
     assert avg is not None
     assert round(avg, 2) == 6.0
@@ -124,3 +124,66 @@ def test_average_consumption_ignores_large_gaps():
     runtime_hours = _estimate_runtime_hours(avg, current_sample=samples[-1])
     assert runtime_hours is not None
     assert round(runtime_hours, 2) == 10.0
+
+
+def test_average_discharge_ignores_charging():
+    from battery_monitor.cli import _average_discharge_w
+    from battery_monitor.db import Sample
+
+    def sample(ts: float, energy_now: float, status: str) -> Sample:
+        return Sample(
+            ts=ts,
+            percentage=None,
+            capacity_pct=None,
+            health_pct=None,
+            energy_now_wh=energy_now,
+            energy_full_wh=60.0,
+            energy_full_design_wh=70.0,
+            status=status,
+            source_path="/dev/null",
+        )
+
+    samples = [
+        sample(0, 60.0, "Discharging"),
+        sample(300, 59.0, "Discharging"),  # 1 Wh drop over 5m -> 12 W
+        sample(600, 60.0, "Charging"),  # Charging should not counteract discharge
+        sample(900, 59.5, "Discharging"),  # transition back to battery use
+        sample(1200, 59.0, "Discharging"),
+    ]
+
+    avg = _average_discharge_w(samples)
+
+    assert avg is not None
+    assert round(avg, 2) == 9.0
+
+
+def test_average_charge_rate_tracks_charging_only():
+    from battery_monitor.cli import _average_charge_w
+    from battery_monitor.db import Sample
+
+    def sample(ts: float, energy_now: float, status: str) -> Sample:
+        return Sample(
+            ts=ts,
+            percentage=None,
+            capacity_pct=None,
+            health_pct=None,
+            energy_now_wh=energy_now,
+            energy_full_wh=60.0,
+            energy_full_design_wh=70.0,
+            status=status,
+            source_path="/dev/null",
+        )
+
+    samples = [
+        sample(0, 50.0, "Charging"),
+        sample(300, 52.0, "Charging"),  # +2 Wh over 5m -> 24 W
+        sample(600, 52.5, "Charging"),  # +0.5 Wh over 5m -> 6 W
+        sample(900, 52.2, "Discharging"),  # discharge segment should be ignored
+        sample(1200, 53.0, "Charging"),  # reset charging window
+        sample(1500, 54.5, "Charging"),  # +1.5 Wh over 5m -> 18 W
+    ]
+
+    avg = _average_charge_w(samples)
+
+    assert avg is not None
+    assert round(avg, 2) == 16.0
