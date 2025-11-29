@@ -96,34 +96,32 @@ impl RateAccumulator {
     }
 }
 
-pub fn average_rates(samples: &[Sample]) -> AverageRates {
+pub fn average_rates<'a>(samples: impl IntoIterator<Item = &'a Sample>) -> AverageRates {
     const MAX_GAP_HOURS: f64 = 5.0 / 60.0;
-
-    let mut ordered: Vec<&Sample> = samples
-        .iter()
-        .filter(|s| s.energy_now_wh.is_some())
-        .collect();
-    ordered.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
-    if ordered.len() < 2 {
-        return AverageRates::default();
-    }
 
     let mut discharge = RateAccumulator::default();
     let mut charge = RateAccumulator::default();
+    let mut iter = samples.into_iter().filter(|s| s.energy_now_wh.is_some());
+    let mut previous = match iter.next() {
+        Some(sample) => sample,
+        None => return AverageRates::default(),
+    };
 
-    for pair in ordered.windows(2) {
-        let (previous, current) = (pair[0], pair[1]);
-        let dt_hours = (current.ts - previous.ts) / 3600.0;
-        if dt_hours <= 0.0 || dt_hours > MAX_GAP_HOURS {
+    for current in iter {
+        if current.ts < previous.ts {
+            previous = current;
             continue;
         }
-
-        let delta = current.energy_now_wh.unwrap() - previous.energy_now_wh.unwrap();
-        if delta > 0.0 && is_charging(previous) && is_charging(current) {
-            charge.record(delta, dt_hours);
-        } else if delta < 0.0 && is_discharging(previous) && is_discharging(current) {
-            discharge.record(-delta, dt_hours);
+        let dt_hours = (current.ts - previous.ts) / 3600.0;
+        if dt_hours > 0.0 && dt_hours <= MAX_GAP_HOURS {
+            let delta = current.energy_now_wh.unwrap() - previous.energy_now_wh.unwrap();
+            if delta > 0.0 && is_charging(previous) && is_charging(current) {
+                charge.record(delta, dt_hours);
+            } else if delta < 0.0 && is_discharging(previous) && is_discharging(current) {
+                discharge.record(-delta, dt_hours);
+            }
         }
+        previous = current;
     }
 
     AverageRates {

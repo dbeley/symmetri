@@ -4,8 +4,9 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use comfy_table::presets::UTF8_FULL;
-use comfy_table::{Cell, ContentArrangement, Table};
+use comfy_table::modifiers::UTF8_ROUND_CORNERS;
+use comfy_table::presets::UTF8_FULL_CONDENSED;
+use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Table};
 
 use chrono::{DateTime, Local, TimeZone};
 
@@ -194,64 +195,52 @@ fn summarize(
     let avg_charge_w = rates.charge_w;
     let est_runtime_hours = estimate_runtime_hours(avg_discharge_w, latest_sample);
 
-    let mut summary = Table::new();
-    summary
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec![
-            Cell::new("Field").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Value"),
-        ]);
-    summary.add_row(vec![
-        Cell::new("Records (all)"),
-        Cell::new(total_records.to_string()),
-    ]);
+    let mut summary = themed_table();
+    summary.set_header(header_cells(&["Field", "Value"]));
+    summary.add_row(vec![label_cell("Records (all)"), value_cell(total_records)]);
     let first_ts = first_sample.map(|s| s.ts).unwrap_or(latest_sample.ts);
     summary.add_row(vec![
-        Cell::new("First record ts"),
-        Cell::new(format_timestamp(first_ts)),
+        label_cell("First record ts"),
+        value_cell(format_timestamp(first_ts)),
     ]);
     summary.add_row(vec![
-        Cell::new("Latest record ts"),
-        Cell::new(format_timestamp(latest_sample.ts)),
+        label_cell("Latest record ts"),
+        value_cell(format_timestamp(latest_sample.ts)),
     ]);
     summary.add_row(vec![
-        Cell::new("Timeframe window"),
-        Cell::new(timeframe_label),
+        label_cell("Timeframe window"),
+        value_cell(timeframe_label),
     ]);
     summary.add_row(vec![
-        Cell::new("Latest status"),
-        Cell::new(latest_sample.status.as_deref().unwrap_or("unknown")),
+        label_cell("Latest status"),
+        status_cell(latest_sample.status.as_deref()),
     ]);
     summary.add_row(vec![
-        Cell::new("Avg discharge power"),
-        Cell::new(format_power(avg_discharge_w)),
+        label_cell("Avg discharge power"),
+        value_cell(format_power(avg_discharge_w)),
     ]);
     summary.add_row(vec![
-        Cell::new("Avg charge power"),
-        Cell::new(format_power(avg_charge_w)),
+        label_cell("Avg charge power"),
+        value_cell(format_power(avg_charge_w)),
     ]);
     summary.add_row(vec![
-        Cell::new("Est runtime (full)"),
-        Cell::new(format_runtime(est_runtime_hours)),
+        label_cell("Est runtime (full)"),
+        value_cell(format_runtime(est_runtime_hours)),
     ]);
-    println!("{summary}");
+    println!("\nSummary\n{summary}");
 
-    println!("{}", recent_table(recent_samples));
-    println!("{}", latest_table(latest_sample));
-    println!("{}", timeframe_report_table(timeframe, timeframe_samples));
+    println!("\nRecent events\n{}", recent_table(recent_samples));
+    println!("\nLatest reading\n{}", latest_table(latest_sample));
+    println!(
+        "\nTimeframe buckets ({})\n{}",
+        timeframe.label.replace('_', " "),
+        timeframe_report_table(timeframe, timeframe_samples)
+    );
 }
 
 fn format_timestamp(ts: f64) -> String {
     let dt = Local.timestamp_opt(ts as i64, 0).unwrap();
     dt.format("%Y-%m-%d %H:%M:%S %Z").to_string()
-}
-
-fn format_pct(value: Option<f64>) -> String {
-    match value {
-        Some(v) => format!("{v:.1}%"),
-        None => "--".to_string(),
-    }
 }
 
 fn format_power(value: Option<f64>) -> String {
@@ -268,62 +257,109 @@ fn format_number(value: Option<f64>) -> String {
     }
 }
 
+fn themed_table() -> Table {
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL_CONDENSED)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic);
+    table
+}
+
+fn header_cells(labels: &[&str]) -> Vec<Cell> {
+    labels
+        .iter()
+        .map(|label| {
+            Cell::new(*label)
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan)
+        })
+        .collect()
+}
+
+fn label_cell(text: &str) -> Cell {
+    Cell::new(text).add_attribute(Attribute::Bold)
+}
+
+fn value_cell<T: std::fmt::Display>(value: T) -> Cell {
+    Cell::new(value.to_string()).set_alignment(CellAlignment::Right)
+}
+
+fn pct_cell(value: Option<f64>) -> Cell {
+    match value {
+        Some(v) => {
+            let color = if v < 20.0 {
+                Color::Red
+            } else if v < 50.0 {
+                Color::Yellow
+            } else {
+                Color::Green
+            };
+            value_cell(format!("{v:.1}%")).fg(color)
+        }
+        None => value_cell("--"),
+    }
+}
+
+fn status_cell(status: Option<&str>) -> Cell {
+    let status_text = status.unwrap_or("unknown");
+    let color = match status_text.to_ascii_lowercase().as_str() {
+        s if s.contains("charging") && !s.contains("dis") => Color::Green,
+        s if s.contains("discharging") => Color::Yellow,
+        s if s.contains("full") => Color::Blue,
+        _ => Color::White,
+    };
+    Cell::new(status_text).fg(color)
+}
+
 fn latest_table(sample: &Sample) -> Table {
-    let mut latest = Table::new();
-    latest
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec![
-            Cell::new("Metric").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Value"),
-        ]);
-    latest.add_row(vec!["Charge %", &format_pct(sample.percentage)]);
-    latest.add_row(vec!["Health %", &format_pct(sample.health_pct)]);
-    latest.add_row(vec!["Capacity %", &format_pct(sample.capacity_pct)]);
+    let mut latest = themed_table();
+    latest.set_header(header_cells(&["Metric", "Value"]));
+    latest.add_row(vec![label_cell("Charge %"), pct_cell(sample.percentage)]);
+    latest.add_row(vec![label_cell("Health %"), pct_cell(sample.health_pct)]);
     latest.add_row(vec![
-        "Energy now (Wh)",
-        &format_number(sample.energy_now_wh),
+        label_cell("Capacity %"),
+        pct_cell(sample.capacity_pct),
     ]);
     latest.add_row(vec![
-        "Energy full (Wh)",
-        &format_number(sample.energy_full_wh),
+        label_cell("Energy now (Wh)"),
+        value_cell(format_number(sample.energy_now_wh)),
     ]);
     latest.add_row(vec![
-        "Energy design (Wh)",
-        &format_number(sample.energy_full_design_wh),
+        label_cell("Energy full (Wh)"),
+        value_cell(format_number(sample.energy_full_wh)),
     ]);
-    latest.add_row(vec!["Source", &sample.source_path]);
+    latest.add_row(vec![
+        label_cell("Energy design (Wh)"),
+        value_cell(format_number(sample.energy_full_design_wh)),
+    ]);
+    latest.add_row(vec![label_cell("Source"), Cell::new(&sample.source_path)]);
     latest
 }
 
 fn recent_table(samples: &[Sample]) -> Table {
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec![
-            Cell::new("When").add_attribute(comfy_table::Attribute::Bold),
-            "Charge".into(),
-            "Health".into(),
-            "Status".into(),
-            "Source".into(),
-        ]);
+    let mut table = themed_table();
+    table.set_header(header_cells(&[
+        "When", "Charge", "Health", "Status", "Source",
+    ]));
     for sample in samples {
         let when = Local.timestamp_opt(sample.ts as i64, 0).unwrap();
         table.add_row(vec![
-            when.format("%m-%d %H:%M").to_string(),
-            format_pct(sample.percentage),
-            format_pct(sample.health_pct),
-            sample
-                .status
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string()),
-            sample
-                .source_path
-                .split('/')
-                .last()
-                .unwrap_or(&sample.source_path)
-                .to_string(),
+            Cell::new(when.format("%m-%d %H:%M").to_string())
+                .fg(Color::Magenta)
+                .add_attribute(Attribute::Bold),
+            pct_cell(sample.percentage),
+            pct_cell(sample.health_pct),
+            status_cell(sample.status.as_deref()),
+            Cell::new(
+                sample
+                    .source_path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&sample.source_path)
+                    .to_string(),
+            )
+            .fg(Color::Cyan),
         ]);
     }
     table
@@ -331,45 +367,44 @@ fn recent_table(samples: &[Sample]) -> Table {
 
 fn timeframe_report_table(timeframe: &Timeframe, samples: &[Sample]) -> Table {
     let bucket_seconds = bucket_span_seconds(timeframe);
-    let mut buckets: std::collections::BTreeMap<DateTime<Local>, Vec<Sample>> =
+    let mut buckets: std::collections::BTreeMap<DateTime<Local>, Vec<&Sample>> =
         std::collections::BTreeMap::new();
     for sample in samples {
         let bucket_key = bucket_start(sample.ts, bucket_seconds);
-        buckets.entry(bucket_key).or_default().push(sample.clone());
+        buckets.entry(bucket_key).or_default().push(sample);
     }
 
-    let mut report = Table::new();
-    report
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec![
-            Cell::new("Window").add_attribute(comfy_table::Attribute::Bold),
-            "Records".into(),
-            "Min %".into(),
-            "Avg %".into(),
-            "Max %".into(),
-            "Avg discharge W".into(),
-            "Avg charge W".into(),
-            "Latest status".into(),
-        ]);
+    let mut report = themed_table();
+    report.set_header(header_cells(&[
+        "Window",
+        "Records",
+        "Min %",
+        "Avg %",
+        "Max %",
+        "Avg discharge W",
+        "Avg charge W",
+        "Latest status",
+    ]));
 
     for (bucket_start, bucket_samples) in buckets {
         let pct_values: Vec<f64> = bucket_samples.iter().filter_map(|s| s.percentage).collect();
         let (min_pct, avg_pct, max_pct) = pct_stats(&pct_values);
         let latest_status = bucket_samples
             .last()
-            .and_then(|s| s.status.clone())
-            .unwrap_or_else(|| "unknown".to_string());
-        let rates = average_rates(&bucket_samples);
+            .and_then(|s| s.status.as_deref())
+            .unwrap_or("unknown");
+        let rates = average_rates(bucket_samples.iter().copied());
         report.add_row(vec![
-            format_bucket(bucket_start, bucket_seconds),
-            bucket_samples.len().to_string(),
-            min_pct,
-            avg_pct,
-            max_pct,
-            format_power(rates.discharge_w),
-            format_power(rates.charge_w),
-            latest_status,
+            Cell::new(format_bucket(bucket_start, bucket_seconds))
+                .fg(Color::Magenta)
+                .add_attribute(Attribute::Bold),
+            value_cell(bucket_samples.len()),
+            value_cell(min_pct),
+            value_cell(avg_pct),
+            value_cell(max_pct),
+            value_cell(format_power(rates.discharge_w)),
+            value_cell(format_power(rates.charge_w)),
+            status_cell(Some(latest_status)),
         ]);
     }
     report

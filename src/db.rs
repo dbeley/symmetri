@@ -45,7 +45,7 @@ pub fn init_db(db_path: &Path) -> Result<()> {
 }
 
 pub fn insert_sample(db_path: &Path, sample: &Sample) -> Result<()> {
-    insert_samples(db_path, &[sample.clone()])
+    insert_samples(db_path, std::slice::from_ref(sample))
 }
 
 pub fn insert_samples(db_path: &Path, samples: &[Sample]) -> Result<()> {

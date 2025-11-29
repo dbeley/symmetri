@@ -97,28 +97,28 @@ pub fn aggregate_samples_by_timestamp(samples: &[Sample]) -> Vec<Sample> {
         return Vec::new();
     }
 
-    let mut sample_list = samples.to_vec();
-    if sample_list.len() > 1 {
-        sample_list.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
+    let is_sorted = samples.windows(2).all(|pair| pair[0].ts <= pair[1].ts);
+    if !is_sorted {
+        let mut sorted = samples.to_vec();
+        sorted.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
+        return aggregate_samples_by_timestamp(&sorted);
     }
 
-    let mut aggregated = Vec::new();
-    let mut current_ts = sample_list[0].ts;
-    let mut bucket: Vec<Sample> = Vec::new();
+    aggregate_already_sorted(samples)
+}
 
-    for sample in sample_list.into_iter() {
-        if sample.ts != current_ts {
-            if let Ok(group) = aggregate_group(&bucket) {
+fn aggregate_already_sorted(samples: &[Sample]) -> Vec<Sample> {
+    let mut aggregated = Vec::new();
+    let mut start = 0usize;
+
+    // Samples are expected to be pre-sorted by timestamp (the DB queries already order by ts).
+    for idx in 1..=samples.len() {
+        if idx == samples.len() || samples[idx].ts != samples[start].ts {
+            if let Ok(group) = aggregate_group(&samples[start..idx]) {
                 aggregated.push(group);
             }
-            bucket.clear();
-            current_ts = sample.ts;
+            start = idx;
         }
-        bucket.push(sample);
-    }
-
-    if let Ok(group) = aggregate_group(&bucket) {
-        aggregated.push(group);
     }
 
     aggregated
