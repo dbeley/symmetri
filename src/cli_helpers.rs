@@ -49,12 +49,12 @@ pub fn default_graph_path(
 pub fn bucket_span_seconds(timeframe: &Timeframe) -> i64 {
     match timeframe.seconds {
         None => 7 * 24 * 3600,
-        Some(window) if window <= 6.0 * 3600.0 => 20 * 60,
-        Some(window) if window <= 24.0 * 3600.0 => 3600,
-        Some(window) if window <= 3.0 * 24.0 * 3600.0 => 2 * 3600,
-        Some(window) if window <= 7.0 * 24.0 * 3600.0 => 6 * 3600,
-        Some(window) if window <= 30.0 * 24.0 * 3600.0 => 24 * 3600,
-        Some(window) if window <= 90.0 * 24.0 * 3600.0 => 3 * 24 * 3600,
+        Some(window) if window < 6.0 * 3600.0 => 10 * 60,
+        Some(window) if window <= 24.0 * 3600.0 => 20 * 60,
+        Some(window) if window <= 3.0 * 24.0 * 3600.0 => 3600,
+        Some(window) if window <= 7.0 * 24.0 * 3600.0 => 2 * 3600,
+        Some(window) if window <= 30.0 * 24.0 * 3600.0 => 6 * 3600,
+        Some(window) if window <= 90.0 * 24.0 * 3600.0 => 24 * 3600,
         _ => 7 * 24 * 3600,
     }
 }
@@ -317,9 +317,24 @@ mod tests {
         let one_day = build_timeframe(0, 1, 0, false).unwrap();
         let span_day = bucket_span_seconds(&one_day);
         let bucket_day = bucket_start(sample_dt.timestamp() as f64, span_day);
-        assert_eq!(span_day, 3600);
-        assert_eq!(bucket_day.hour(), sample_dt.hour());
-        assert_eq!(bucket_day.minute(), 0);
+        assert_eq!(span_day, 20 * 60);
+        assert_eq!(bucket_day.minute() % 20, 0);
         assert_eq!(bucket_day.second(), 0);
+    }
+
+    #[test]
+    fn bucket_span_uses_10min_for_small_timeframes() {
+        use crate::timeframe::build_timeframe;
+        let small_timeframe = build_timeframe(3, 0, 0, false).unwrap();
+        let span = bucket_span_seconds(&small_timeframe);
+        assert_eq!(span, 10 * 60);
+
+        let five_hours = build_timeframe(5, 0, 0, false).unwrap();
+        let span_5h = bucket_span_seconds(&five_hours);
+        assert_eq!(span_5h, 10 * 60);
+
+        let six_hours = build_timeframe(6, 0, 0, false).unwrap();
+        let span_6h = bucket_span_seconds(&six_hours);
+        assert_eq!(span_6h, 20 * 60);
     }
 }
