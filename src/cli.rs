@@ -207,7 +207,10 @@ fn export_csv(samples: &[Sample]) -> Result<()> {
 
     // Print each sample as a CSV row
     for sample in samples {
-        let dt = Local.timestamp_opt(sample.ts as i64, 0).unwrap();
+        let dt = Local
+            .timestamp_opt(sample.ts as i64, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("Invalid timestamp: {}", sample.ts))?;
         println!(
             "{},{},{},{},{},{},{},{},{},{}",
             sample.ts,
@@ -249,7 +252,10 @@ fn export_json(samples: &[Sample]) -> Result<()> {
 
     writeln!(output, "[")?;
     for (i, sample) in samples.iter().enumerate() {
-        let dt = Local.timestamp_opt(sample.ts as i64, 0).unwrap();
+        let dt = Local
+            .timestamp_opt(sample.ts as i64, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("Invalid timestamp: {}", sample.ts))?;
         let comma = if i < samples.len() - 1 { "," } else { "" };
 
         writeln!(output, "  {{")?;
