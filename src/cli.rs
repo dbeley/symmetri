@@ -8,7 +8,7 @@ use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Table};
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, TimeZone};
 
 use crate::aggregate::aggregate_samples_by_timestamp;
 use crate::cli_helpers::{
@@ -65,6 +65,12 @@ pub enum Commands {
         /// Custom path for the graph image (png/pdf/etc); overrides --graph name
         #[arg(long = "graph-path")]
         graph_path: Option<PathBuf>,
+        /// Export raw data to stdout
+        #[arg(long = "raw")]
+        raw: bool,
+        /// Output format for raw data export (csv or json)
+        #[arg(long = "format", default_value = "csv", value_parser = ["csv", "json"])]
+        format: String,
         /// Enable debug logging
         #[arg(short, long)]
         verbose: bool,
@@ -112,6 +118,8 @@ where
             db_path,
             graph: graph_flag,
             graph_path,
+            raw,
+            format,
             verbose,
         } => {
             configure_logging(verbose);
@@ -135,21 +143,25 @@ where
                 std::process::exit(1);
             }
 
-            let output_path = match (graph_path, graph_flag) {
-                (Some(path), _) => Some(path),
-                (None, true) => Some(default_graph_path(
-                    &timeframe.label,
-                    None,
-                    Some(Local::now()),
-                )),
-                _ => None,
-            };
+            if raw {
+                export_raw_data(&samples, &format)?;
+            } else {
+                let output_path = match (graph_path, graph_flag) {
+                    (Some(path), _) => Some(path),
+                    (None, true) => Some(default_graph_path(
+                        &timeframe.label,
+                        None,
+                        Some(Local::now()),
+                    )),
+                    _ => None,
+                };
 
-            if let Some(path) = output_path {
-                graph::render_plot(&samples, &timeframe, &path)?;
+                if let Some(path) = output_path {
+                    graph::render_plot(&samples, &timeframe, &path)?;
+                }
+
+                summarize(&samples, &timeframe, timeframe_record_count);
             }
-
-            summarize(&samples, &timeframe, timeframe_record_count);
         }
     }
     Ok(())
@@ -179,6 +191,104 @@ fn summarize(timeframe_samples: &[Sample], timeframe: &Timeframe, timeframe_reco
         timeframe.label.replace('_', " "),
         timeframe_report_table(timeframe, timeframe_samples)
     );
+}
+
+fn export_raw_data(samples: &[Sample], format: &str) -> Result<()> {
+    match format {
+        "csv" => export_csv(samples),
+        "json" => export_json(samples),
+        _ => anyhow::bail!("Unsupported format: {}", format),
+    }
+}
+
+fn export_csv(samples: &[Sample]) -> Result<()> {
+    // Print CSV header
+    println!("timestamp,datetime,percentage,capacity_pct,health_pct,energy_now_wh,energy_full_wh,energy_full_design_wh,status,source_path");
+    
+    // Print each sample as a CSV row
+    for sample in samples {
+        let dt = Local.timestamp_opt(sample.ts as i64, 0).unwrap();
+        println!(
+            "{},{},{},{},{},{},{},{},{},{}",
+            sample.ts,
+            dt.format("%Y-%m-%d %H:%M:%S"),
+            sample.percentage.map(|v| format!("{:.2}", v)).unwrap_or_default(),
+            sample.capacity_pct.map(|v| format!("{:.2}", v)).unwrap_or_default(),
+            sample.health_pct.map(|v| format!("{:.2}", v)).unwrap_or_default(),
+            sample.energy_now_wh.map(|v| format!("{:.2}", v)).unwrap_or_default(),
+            sample.energy_full_wh.map(|v| format!("{:.2}", v)).unwrap_or_default(),
+            sample.energy_full_design_wh.map(|v| format!("{:.2}", v)).unwrap_or_default(),
+            sample.status.as_deref().unwrap_or(""),
+            sample.source_path
+        );
+    }
+    Ok(())
+}
+
+fn export_json(samples: &[Sample]) -> Result<()> {
+    use std::io::stdout;
+    let mut output = stdout();
+    
+    writeln!(output, "[")?;
+    for (i, sample) in samples.iter().enumerate() {
+        let dt = Local.timestamp_opt(sample.ts as i64, 0).unwrap();
+        let comma = if i < samples.len() - 1 { "," } else { "" };
+        
+        writeln!(output, "  {{")?;
+        writeln!(output, "    \"timestamp\": {},", sample.ts)?;
+        writeln!(output, "    \"datetime\": \"{}\",", dt.format("%Y-%m-%d %H:%M:%S"))?;
+        
+        if let Some(v) = sample.percentage {
+            writeln!(output, "    \"percentage\": {:.2},", v)?;
+        } else {
+            writeln!(output, "    \"percentage\": null,")?;
+        }
+        
+        if let Some(v) = sample.capacity_pct {
+            writeln!(output, "    \"capacity_pct\": {:.2},", v)?;
+        } else {
+            writeln!(output, "    \"capacity_pct\": null,")?;
+        }
+        
+        if let Some(v) = sample.health_pct {
+            writeln!(output, "    \"health_pct\": {:.2},", v)?;
+        } else {
+            writeln!(output, "    \"health_pct\": null,")?;
+        }
+        
+        if let Some(v) = sample.energy_now_wh {
+            writeln!(output, "    \"energy_now_wh\": {:.2},", v)?;
+        } else {
+            writeln!(output, "    \"energy_now_wh\": null,")?;
+        }
+        
+        if let Some(v) = sample.energy_full_wh {
+            writeln!(output, "    \"energy_full_wh\": {:.2},", v)?;
+        } else {
+            writeln!(output, "    \"energy_full_wh\": null,")?;
+        }
+        
+        if let Some(v) = sample.energy_full_design_wh {
+            writeln!(output, "    \"energy_full_design_wh\": {:.2},", v)?;
+        } else {
+            writeln!(output, "    \"energy_full_design_wh\": null,")?;
+        }
+        
+        writeln!(
+            output,
+            "    \"status\": {},",
+            if let Some(ref s) = sample.status {
+                format!("\"{}\"", s)
+            } else {
+                "null".to_string()
+            }
+        )?;
+        
+        writeln!(output, "    \"source_path\": \"{}\"", sample.source_path)?;
+        writeln!(output, "  }}{}", comma)?;
+    }
+    writeln!(output, "]")?;
+    Ok(())
 }
 
 fn format_power(value: Option<f64>) -> String {
