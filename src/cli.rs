@@ -14,7 +14,7 @@ use chrono::{DateTime, Local};
 use crate::aggregate::aggregate_samples_by_timestamp;
 use crate::cli_helpers::{
     average_rates, bucket_span_seconds, bucket_start, default_graph_path, estimate_runtime_hours,
-    format_runtime, AverageRates,
+    format_runtime,
 };
 use crate::collector::{collect_loop, collect_once, resolve_db_path};
 use crate::db::{self, Sample};
@@ -235,10 +235,21 @@ where
             };
 
             if let Some(path) = output_path {
-                if samples.is_empty() {
-                    println!("Skipping graph output; no battery data in timeframe.");
+                if samples.is_empty() && metric_samples.is_empty() {
+                    println!("Skipping graph output; no data in timeframe.");
                 } else {
-                    graph::render_plot(&samples, &timeframe, &path)?;
+                    let battery_for_plot: &[Sample] = if presets.contains(&ReportPreset::Battery) {
+                        &samples
+                    } else {
+                        &[]
+                    };
+                    graph::render_plot(
+                        battery_for_plot,
+                        &metric_samples,
+                        &presets,
+                        &timeframe,
+                        &path,
+                    )?;
                 }
             }
 
@@ -273,21 +284,6 @@ fn summarize(
         bucket_stats_for_kind(metrics, MetricKind::PowerDraw, bucket_seconds);
     let network_rates = compute_network_rates(metrics);
 
-    println!(
-        "\nOverview ({})\n{}",
-        timeframe_label,
-        overview_table(
-            presets,
-            timeframe_records,
-            timeframe_samples,
-            &battery_rates,
-            avg_discharge_w,
-            est_runtime_hours,
-            metrics,
-            &network_rates
-        )
-    );
-
     if presets.contains(&ReportPreset::Battery) {
         println!(
             "\nBattery summary ({})\n{}",
@@ -304,9 +300,9 @@ fn summarize(
             println!("\nNo battery samples available for buckets in {timeframe_label}.");
         } else {
             println!(
-                "\nBattery windows ({})\n{}",
+                "\nBattery stats ({})\n{}",
                 timeframe.label.replace('_', " "),
-                battery_windows_table(timeframe_samples, &power_draw_by_bucket, bucket_seconds)
+                battery_stats_table(timeframe_samples, &power_draw_by_bucket, bucket_seconds)
             );
         }
     }
@@ -318,9 +314,9 @@ fn summarize(
             println!("\nNo CPU samples available for {timeframe_label}.");
         } else {
             println!(
-                "\nCPU windows ({})\n{}",
+                "\nCPU stats ({})\n{}",
                 timeframe.label.replace('_', " "),
-                cpu_window_table(bucket_seconds, &usage_buckets, &freq_buckets)
+                cpu_stats_table(bucket_seconds, &usage_buckets, &freq_buckets)
             );
         }
     }
@@ -332,9 +328,9 @@ fn summarize(
             println!("\nNo GPU samples available for {timeframe_label}.");
         } else {
             println!(
-                "\nGPU windows ({})\n{}",
+                "\nGPU stats ({})\n{}",
                 timeframe.label.replace('_', " "),
-                gpu_window_table(bucket_seconds, &usage_buckets, &freq_buckets)
+                gpu_stats_table(bucket_seconds, &usage_buckets, &freq_buckets)
             );
         }
     }
@@ -345,9 +341,9 @@ fn summarize(
             println!("\nNo memory samples available for {timeframe_label}.");
         } else {
             println!(
-                "\nMemory windows ({})\n{}",
+                "\nMemory stats ({})\n{}",
                 timeframe.label.replace('_', " "),
-                memory_window_table(bucket_seconds, &memory_buckets)
+                memory_stats_table(bucket_seconds, &memory_buckets)
             );
         }
     }
@@ -358,9 +354,9 @@ fn summarize(
             println!("\nNo disk samples available for {timeframe_label}.");
         } else {
             println!(
-                "\nDisk windows ({})\n{}",
+                "\nDisk stats ({})\n{}",
                 timeframe.label.replace('_', " "),
-                disk_window_table(bucket_seconds, &disk_buckets)
+                disk_stats_table(bucket_seconds, &disk_buckets)
             );
         }
     }
@@ -371,9 +367,9 @@ fn summarize(
             println!("\nNo network samples available for {timeframe_label}.");
         } else {
             println!(
-                "\nNetwork windows ({})\n{}",
+                "\nNetwork stats ({})\n{}",
                 timeframe.label.replace('_', " "),
-                network_window_table(bucket_seconds, &network_buckets)
+                network_stats_table(bucket_seconds, &network_buckets)
             );
         }
     }
@@ -384,9 +380,9 @@ fn summarize(
             println!("\nNo temperature samples available for {timeframe_label}.");
         } else {
             println!(
-                "\nTemperature windows ({})\n{}",
+                "\nTemperature stats ({})\n{}",
                 timeframe.label.replace('_', " "),
-                temperature_window_table(bucket_seconds, &temp_buckets)
+                temperature_stats_table(bucket_seconds, &temp_buckets)
             );
         }
     }
@@ -481,6 +477,10 @@ impl NumberStats {
         (self.count > 0).then_some(self.total / self.count as f64)
     }
 
+    fn min(&self) -> Option<f64> {
+        (self.count > 0).then_some(self.min)
+    }
+
     fn max(&self) -> Option<f64> {
         (self.count > 0).then_some(self.max)
     }
@@ -541,6 +541,7 @@ fn bucket_stats_for_kind(
     buckets
 }
 
+#[cfg(test)]
 fn usage_stats_for_kind(metrics: &[MetricSample], kind: MetricKind) -> UsageStats {
     let mut stats = UsageStats::default();
     for sample in metrics.iter().filter(|s| s.kind == kind) {
@@ -637,143 +638,10 @@ fn bucket_network_rates(
     buckets
 }
 
-fn preset_label(preset: ReportPreset) -> &'static str {
-    match preset {
-        ReportPreset::Battery => "Battery",
-        ReportPreset::Cpu => "CPU",
-        ReportPreset::Gpu => "GPU",
-        ReportPreset::Memory => "Memory",
-        ReportPreset::Network => "Network",
-        ReportPreset::Temperature => "Temperature",
-        ReportPreset::Disk => "Disk",
-    }
-}
-
 fn format_freq(value: Option<f64>) -> String {
     value
         .map(|v| format!("{v:.0}MHz"))
         .unwrap_or_else(|| "--".to_string())
-}
-
-fn overview_table(
-    presets: &[ReportPreset],
-    timeframe_records: usize,
-    battery_samples: &[Sample],
-    battery_rates: &AverageRates,
-    avg_discharge_w: Option<f64>,
-    est_runtime_hours: Option<f64>,
-    metrics: &[MetricSample],
-    network_rates: &[NetworkRateSample],
-) -> Table {
-    let mut table = themed_table();
-    table.set_header(header_cells(&["Preset", "Summary"]));
-
-    for preset in presets {
-        let summary = match preset {
-            ReportPreset::Battery => {
-                let charge = format_power(battery_rates.charge_w);
-                let discharge = format_power(avg_discharge_w);
-                let runtime = format_runtime(est_runtime_hours);
-                if battery_samples.is_empty() && avg_discharge_w.is_none() {
-                    format!("Records {timeframe_records} | no battery data")
-                } else {
-                    format!(
-                        "Records {timeframe_records} | avg draw {discharge} | avg charge {charge} | est runtime {runtime}"
-                    )
-                }
-            }
-            ReportPreset::Cpu => {
-                let usage = average_for_kind(metrics, MetricKind::CpuUsage);
-                let freq = average_for_kind(metrics, MetricKind::CpuFrequency);
-                if usage.count == 0 && freq.count == 0 {
-                    "No CPU data".to_string()
-                } else {
-                    format!(
-                        "Avg usage {} (peak {}) | Avg freq {}",
-                        format_percent(usage.average()),
-                        format_percent(usage.max()),
-                        format_freq(freq.average()),
-                    )
-                }
-            }
-            ReportPreset::Gpu => {
-                let usage = average_for_kind(metrics, MetricKind::GpuUsage);
-                let freq = average_for_kind(metrics, MetricKind::GpuFrequency);
-                if usage.count == 0 && freq.count == 0 {
-                    "No GPU data".to_string()
-                } else {
-                    format!(
-                        "Avg usage {} (peak {}) | Avg freq {}",
-                        format_percent(usage.average()),
-                        format_percent(usage.max()),
-                        format_freq(freq.average())
-                    )
-                }
-            }
-            ReportPreset::Memory => {
-                let usage = usage_stats_for_kind(metrics, MetricKind::MemoryUsage);
-                if usage.used.count == 0 {
-                    "No memory data".to_string()
-                } else {
-                    format!(
-                        "Avg used {} ({})",
-                        format_opt_bytes(usage.used.average()),
-                        format_percent(usage.percent.average())
-                    )
-                }
-            }
-            ReportPreset::Disk => {
-                let usage = usage_stats_for_kind(metrics, MetricKind::DiskUsage);
-                if usage.used.count == 0 {
-                    "No disk data".to_string()
-                } else {
-                    format!(
-                        "Avg used {} ({})",
-                        format_opt_bytes(usage.used.average()),
-                        format_percent(usage.percent.average())
-                    )
-                }
-            }
-            ReportPreset::Network => {
-                let mut combined = RateStats::default();
-                for rate in network_rates {
-                    combined.record(rate.rx_rate, rate.tx_rate);
-                }
-                if combined.rx.count == 0 && combined.tx.count == 0 {
-                    "No network data".to_string()
-                } else {
-                    format!(
-                        "Avg down {} (peak {}) | Avg up {} (peak {})",
-                        format_rate(combined.rx.average()),
-                        format_rate(combined.rx.max()),
-                        format_rate(combined.tx.average()),
-                        format_rate(combined.tx.max())
-                    )
-                }
-            }
-            ReportPreset::Temperature => {
-                let temps = average_for_kind(metrics, MetricKind::Temperature);
-                if temps.count == 0 {
-                    "No temperature data".to_string()
-                } else {
-                    format!(
-                        "Avg {} (peak {})",
-                        temps
-                            .average()
-                            .map(|v| format!("{v:.1}C"))
-                            .unwrap_or_else(|| "--".to_string()),
-                        temps
-                            .max()
-                            .map(|v| format!("{v:.1}C"))
-                            .unwrap_or_else(|| "--".to_string())
-                    )
-                }
-            }
-        };
-        table.add_row(vec![label_cell(preset_label(*preset)), Cell::new(summary)]);
-    }
-
-    table
 }
 
 fn battery_summary_table(
@@ -803,7 +671,7 @@ fn battery_summary_table(
     table
 }
 
-fn battery_windows_table(
+fn battery_stats_table(
     samples: &[Sample],
     power_draw: &BTreeMap<DateTime<Local>, NumberStats>,
     bucket_seconds: i64,
@@ -854,7 +722,7 @@ fn battery_windows_table(
     report
 }
 
-fn cpu_window_table(
+fn cpu_stats_table(
     bucket_seconds: i64,
     usage: &BTreeMap<DateTime<Local>, NumberStats>,
     freq: &BTreeMap<DateTime<Local>, NumberStats>,
@@ -863,8 +731,10 @@ fn cpu_window_table(
     report.set_header(header_cells(&[
         "Window",
         "Samples",
+        "Min usage",
         "Avg usage",
         "Peak usage",
+        "Min freq",
         "Avg freq",
         "Peak freq",
     ]));
@@ -882,8 +752,10 @@ fn cpu_window_table(
                 .fg(Color::Magenta)
                 .add_attribute(Attribute::Bold),
             value_cell(samples),
+            value_cell(format_percent(usage_stats.min())),
             value_cell(format_percent(usage_stats.average())),
             value_cell(format_percent(usage_stats.max())),
+            value_cell(format_freq(freq_stats.min())),
             value_cell(format_freq(freq_stats.average())),
             value_cell(format_freq(freq_stats.max())),
         ]);
@@ -891,7 +763,7 @@ fn cpu_window_table(
     report
 }
 
-fn gpu_window_table(
+fn gpu_stats_table(
     bucket_seconds: i64,
     usage: &BTreeMap<DateTime<Local>, NumberStats>,
     freq: &BTreeMap<DateTime<Local>, NumberStats>,
@@ -900,8 +772,10 @@ fn gpu_window_table(
     report.set_header(header_cells(&[
         "Window",
         "Samples",
+        "Min usage",
         "Avg usage",
         "Peak usage",
+        "Min freq",
         "Avg freq",
         "Peak freq",
     ]));
@@ -919,8 +793,10 @@ fn gpu_window_table(
                 .fg(Color::Magenta)
                 .add_attribute(Attribute::Bold),
             value_cell(samples),
+            value_cell(format_percent(usage_stats.min())),
             value_cell(format_percent(usage_stats.average())),
             value_cell(format_percent(usage_stats.max())),
+            value_cell(format_freq(freq_stats.min())),
             value_cell(format_freq(freq_stats.average())),
             value_cell(format_freq(freq_stats.max())),
         ]);
@@ -928,7 +804,7 @@ fn gpu_window_table(
     report
 }
 
-fn memory_window_table(
+fn memory_stats_table(
     bucket_seconds: i64,
     buckets: &BTreeMap<DateTime<Local>, UsageStats>,
 ) -> Table {
@@ -936,7 +812,9 @@ fn memory_window_table(
     report.set_header(header_cells(&[
         "Window",
         "Samples",
+        "Min used",
         "Avg used",
+        "Min used %",
         "Avg used %",
         "Peak used %",
     ]));
@@ -947,7 +825,9 @@ fn memory_window_table(
                 .fg(Color::Magenta)
                 .add_attribute(Attribute::Bold),
             value_cell(stats.used.count),
+            value_cell(format_opt_bytes(stats.used.min())),
             value_cell(format_opt_bytes(stats.used.average())),
+            value_cell(format_percent(stats.percent.min())),
             value_cell(format_percent(stats.percent.average())),
             value_cell(format_percent(stats.percent.max())),
         ]);
@@ -955,15 +835,14 @@ fn memory_window_table(
     report
 }
 
-fn disk_window_table(
-    bucket_seconds: i64,
-    buckets: &BTreeMap<DateTime<Local>, UsageStats>,
-) -> Table {
+fn disk_stats_table(bucket_seconds: i64, buckets: &BTreeMap<DateTime<Local>, UsageStats>) -> Table {
     let mut report = themed_table();
     report.set_header(header_cells(&[
         "Window",
         "Samples",
+        "Min used",
         "Avg used",
+        "Min used %",
         "Avg used %",
         "Peak used %",
     ]));
@@ -974,7 +853,9 @@ fn disk_window_table(
                 .fg(Color::Magenta)
                 .add_attribute(Attribute::Bold),
             value_cell(stats.used.count),
+            value_cell(format_opt_bytes(stats.used.min())),
             value_cell(format_opt_bytes(stats.used.average())),
+            value_cell(format_percent(stats.percent.min())),
             value_cell(format_percent(stats.percent.average())),
             value_cell(format_percent(stats.percent.max())),
         ]);
@@ -982,7 +863,7 @@ fn disk_window_table(
     report
 }
 
-fn temperature_window_table(
+fn temperature_stats_table(
     bucket_seconds: i64,
     buckets: &BTreeMap<DateTime<Local>, NumberStats>,
 ) -> Table {
@@ -990,6 +871,7 @@ fn temperature_window_table(
     report.set_header(header_cells(&[
         "Window",
         "Samples",
+        "Min temp",
         "Avg temp",
         "Peak temp",
     ]));
@@ -1000,6 +882,12 @@ fn temperature_window_table(
                 .fg(Color::Magenta)
                 .add_attribute(Attribute::Bold),
             value_cell(stats.count),
+            value_cell(
+                stats
+                    .min()
+                    .map(|v| format!("{v:.1}C"))
+                    .unwrap_or_else(|| "--".to_string()),
+            ),
             value_cell(
                 stats
                     .average()
@@ -1017,7 +905,7 @@ fn temperature_window_table(
     report
 }
 
-fn network_window_table(
+fn network_stats_table(
     bucket_seconds: i64,
     buckets: &BTreeMap<DateTime<Local>, RateStats>,
 ) -> Table {
