@@ -245,6 +245,37 @@ pub fn count_events(db_path: &Path, since_ts: Option<f64>) -> Result<usize> {
     Ok(count as usize)
 }
 
+pub fn delete_old_samples(db_path: &Path, cutoff_ts: f64) -> Result<()> {
+    let mut conn = Connection::open(db_path)?;
+    let tx = conn.transaction()?;
+    
+    tx.execute("DELETE FROM samples WHERE ts < ?", params![cutoff_ts])?;
+    tx.execute("DELETE FROM metric_samples WHERE ts < ?", params![cutoff_ts])?;
+    
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn count_old_samples(db_path: &Path, cutoff_ts: f64) -> Result<usize> {
+    let conn = Connection::open(db_path)?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM samples WHERE ts < ?",
+        params![cutoff_ts],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
+pub fn count_old_metric_samples(db_path: &Path, cutoff_ts: f64) -> Result<usize> {
+    let conn = Connection::open(db_path)?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM metric_samples WHERE ts < ?",
+        params![cutoff_ts],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
 fn sample_from_row(row: &Row) -> rusqlite::Result<Sample> {
     Ok(Sample {
         ts: row.get("ts")?,
@@ -671,5 +702,91 @@ mod tests {
         assert_eq!(latest.len(), 2);
         assert_eq!(latest[0].source, "cpu");
         assert_eq!(latest[0].value, Some(50.0));
+    }
+
+    #[test]
+    fn delete_old_samples_removes_data_before_cutoff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("metrics.db");
+        init_db(&db_path).unwrap();
+
+        let samples = vec![
+            Sample {
+                ts: 1.0,
+                percentage: Some(80.0),
+                capacity_pct: None,
+                health_pct: None,
+                energy_now_wh: Some(50.0),
+                energy_full_wh: Some(60.0),
+                energy_full_design_wh: Some(60.0),
+                status: Some("Discharging".to_string()),
+                source_path: "BAT0".to_string(),
+            },
+            Sample {
+                ts: 2.0,
+                percentage: Some(75.0),
+                capacity_pct: None,
+                health_pct: None,
+                energy_now_wh: Some(45.0),
+                energy_full_wh: Some(60.0),
+                energy_full_design_wh: Some(60.0),
+                status: Some("Discharging".to_string()),
+                source_path: "BAT0".to_string(),
+            },
+            Sample {
+                ts: 100.0,
+                percentage: Some(70.0),
+                capacity_pct: None,
+                health_pct: None,
+                energy_now_wh: Some(40.0),
+                energy_full_wh: Some(60.0),
+                energy_full_design_wh: Some(60.0),
+                status: Some("Discharging".to_string()),
+                source_path: "BAT0".to_string(),
+            },
+        ];
+        insert_samples(&db_path, &samples).unwrap();
+
+        let metrics = vec![
+            MetricSample {
+                ts: 1.0,
+                kind: MetricKind::CpuUsage,
+                source: "cpu".to_string(),
+                value: Some(42.0),
+                unit: Some("%".to_string()),
+                details: serde_json::Value::Null,
+            },
+            MetricSample {
+                ts: 100.0,
+                kind: MetricKind::CpuUsage,
+                source: "cpu".to_string(),
+                value: Some(50.0),
+                unit: Some("%".to_string()),
+                details: serde_json::Value::Null,
+            },
+        ];
+        insert_metric_samples(&db_path, &metrics).unwrap();
+
+        // Count old samples before deletion
+        let old_battery = count_old_samples(&db_path, 50.0).unwrap();
+        let old_metrics = count_old_metric_samples(&db_path, 50.0).unwrap();
+        assert_eq!(old_battery, 2);
+        assert_eq!(old_metrics, 1);
+
+        // Delete old samples
+        delete_old_samples(&db_path, 50.0).unwrap();
+
+        // Verify deletion
+        let remaining_battery = count_samples(&db_path, None).unwrap();
+        let remaining_metrics = count_metric_samples(&db_path, None).unwrap();
+        assert_eq!(remaining_battery, 1);
+        assert_eq!(remaining_metrics, 1);
+
+        // Verify the correct samples remain
+        let battery_samples = fetch_samples(&db_path, None).unwrap();
+        assert_eq!(battery_samples[0].ts, 100.0);
+
+        let metric_samples = fetch_metric_samples(&db_path, None, None).unwrap();
+        assert_eq!(metric_samples[0].ts, 100.0);
     }
 }

@@ -59,6 +59,21 @@ pub enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+    /// Clean old data from the database
+    Clean {
+        /// Path to SQLite database (or set SYMMETRI_DB)
+        #[arg(long = "db")]
+        db_path: Option<PathBuf>,
+        /// Delete data older than this many days (default: 90)
+        #[arg(long = "days", default_value_t = 90)]
+        days: u64,
+        /// Perform dry run without deleting data
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// Enable debug logging
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Render a timeframe report (optionally save a graph image)
     Report {
         /// Window in hours (used when days/months are zero)
@@ -193,6 +208,38 @@ where
                 if code != 0 {
                     std::process::exit(code);
                 }
+            }
+        }
+        Commands::Clean {
+            db_path,
+            days,
+            dry_run,
+            verbose,
+        } => {
+            configure_logging(verbose);
+            let resolved = resolve_db_path(db_path.as_deref());
+            let cutoff_ts = chrono::Utc::now().timestamp() as f64 - (days as f64 * 86400.0);
+            
+            let battery_count = db::count_old_samples(&resolved, cutoff_ts)?;
+            let metric_count = db::count_old_metric_samples(&resolved, cutoff_ts)?;
+            
+            if battery_count == 0 && metric_count == 0 {
+                println!("No records found older than {} days.", days);
+                return Ok(());
+            }
+            
+            println!(
+                "Found {} battery samples and {} metric samples older than {} days.",
+                battery_count, metric_count, days
+            );
+            
+            if dry_run {
+                println!("Dry run mode - no data will be deleted.");
+            } else {
+                db::delete_old_samples(&resolved, cutoff_ts)?;
+                println!("Deleted old records successfully.");
+                println!("Consider running VACUUM on the database to reclaim space:");
+                println!("  sqlite3 {} 'VACUUM;'", resolved.display());
             }
         }
         Commands::Report {
