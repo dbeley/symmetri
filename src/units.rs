@@ -61,21 +61,25 @@ pub fn format_temp(value: Option<f64>) -> String {
 }
 
 /// Convert microseconds to seconds
+#[allow(dead_code)]
 pub fn usecs_to_secs(usecs: f64) -> f64 {
     usecs / 1_000_000.0
 }
 
 /// Convert milliseconds to seconds
+#[allow(dead_code)]
 pub fn msecs_to_secs(msecs: f64) -> f64 {
     msecs / 1000.0
 }
 
 /// Convert seconds to hours
+#[allow(dead_code)]
 pub fn secs_to_hours(secs: f64) -> f64 {
     secs / 3600.0
 }
 
 /// Convert watts to kilowatts
+#[allow(dead_code)]
 pub fn watts_to_kilowatts(watts: f64) -> f64 {
     watts / 1000.0
 }
