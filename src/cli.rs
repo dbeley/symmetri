@@ -23,6 +23,8 @@ use crate::db::{self, Sample};
 use crate::graph;
 use crate::metrics::{MetricKind, MetricSample};
 use crate::timeframe::{build_timeframe, Timeframe};
+use crate::units;
+
 
 #[derive(Parser)]
 #[command(name = "symmetri", version)]
@@ -626,13 +628,6 @@ fn export_csv(
     Ok(())
 }
 
-fn format_power(value: Option<f64>) -> String {
-    match value {
-        Some(v) => format!("{v:.2}W"),
-        None => "--".to_string(),
-    }
-}
-
 fn themed_table() -> Table {
     let mut table = Table::new();
     table
@@ -670,18 +665,6 @@ fn status_cell(status: Option<&str>) -> Cell {
         _ => Color::White,
     };
     Cell::new(status_text).fg(color)
-}
-
-fn format_percent(value: Option<f64>) -> String {
-    value
-        .map(|v| format!("{v:.1}%"))
-        .unwrap_or_else(|| "--".to_string())
-}
-
-fn format_rate(value: Option<f64>) -> String {
-    value
-        .map(|v| format!("{}/s", format_bytes(v)))
-        .unwrap_or_else(|| "--".to_string())
 }
 
 #[derive(Default, Clone)]
@@ -932,12 +915,6 @@ fn bucket_network_rates(
     buckets
 }
 
-fn format_freq(value: Option<f64>) -> String {
-    value
-        .map(|v| format!("{v:.0}MHz"))
-        .unwrap_or_else(|| "--".to_string())
-}
-
 fn battery_summary_table(
     timeframe_records: usize,
     avg_discharge_w: Option<f64>,
@@ -952,11 +929,11 @@ fn battery_summary_table(
     ]);
     table.add_row(vec![
         label_cell("Avg discharge power"),
-        value_cell(format_power(avg_discharge_w)),
+        value_cell(units::format_power(avg_discharge_w)),
     ]);
     table.add_row(vec![
         label_cell("Avg charge power"),
-        value_cell(format_power(avg_charge_w)),
+        value_cell(units::format_power(avg_charge_w)),
     ]);
     table.add_row(vec![
         label_cell("Est runtime (full)"),
@@ -1008,8 +985,8 @@ fn battery_stats_table(
             value_cell(min_pct),
             value_cell(avg_pct),
             value_cell(max_pct),
-            value_cell(format_power(draw)),
-            value_cell(format_power(rates.charge_w)),
+            value_cell(units::format_power(draw)),
+            value_cell(units::format_power(rates.charge_w)),
             status_cell(Some(latest_status)),
         ]);
     }
@@ -1059,12 +1036,12 @@ fn cpu_stats_table(bucket_seconds: i64, usage: &SourceBuckets, freq: &SourceBuck
                     .fg(Color::Magenta)
                     .add_attribute(Attribute::Bold),
                 value_cell(samples),
-                value_cell(format_percent(usage_stats.min())),
-                value_cell(format_percent(usage_stats.average())),
-                value_cell(format_percent(usage_stats.max())),
-                value_cell(format_freq(freq_stats.min())),
-                value_cell(format_freq(freq_stats.average())),
-                value_cell(format_freq(freq_stats.max())),
+                value_cell(units::format_percent(usage_stats.min())),
+                value_cell(units::format_percent(usage_stats.average())),
+                value_cell(units::format_percent(usage_stats.max())),
+                value_cell(units::format_freq(freq_stats.min())),
+                value_cell(units::format_freq(freq_stats.average())),
+                value_cell(units::format_freq(freq_stats.max())),
             ]);
         }
     }
@@ -1114,12 +1091,12 @@ fn gpu_stats_table(bucket_seconds: i64, usage: &SourceBuckets, freq: &SourceBuck
                     .fg(Color::Magenta)
                     .add_attribute(Attribute::Bold),
                 value_cell(samples),
-                value_cell(format_percent(usage_stats.min())),
-                value_cell(format_percent(usage_stats.average())),
-                value_cell(format_percent(usage_stats.max())),
-                value_cell(format_freq(freq_stats.min())),
-                value_cell(format_freq(freq_stats.average())),
-                value_cell(format_freq(freq_stats.max())),
+                value_cell(units::format_percent(usage_stats.min())),
+                value_cell(units::format_percent(usage_stats.average())),
+                value_cell(units::format_percent(usage_stats.max())),
+                value_cell(units::format_freq(freq_stats.min())),
+                value_cell(units::format_freq(freq_stats.average())),
+                value_cell(units::format_freq(freq_stats.max())),
             ]);
         }
     }
@@ -1147,11 +1124,11 @@ fn memory_stats_table(
                 .fg(Color::Magenta)
                 .add_attribute(Attribute::Bold),
             value_cell(stats.used.count),
-            value_cell(format_opt_bytes(stats.used.min())),
-            value_cell(format_opt_bytes(stats.used.average())),
-            value_cell(format_percent(stats.percent.min())),
-            value_cell(format_percent(stats.percent.average())),
-            value_cell(format_percent(stats.percent.max())),
+            value_cell(units::format_opt_bytes(stats.used.min())),
+            value_cell(units::format_opt_bytes(stats.used.average())),
+            value_cell(units::format_percent(stats.percent.min())),
+            value_cell(units::format_percent(stats.percent.average())),
+            value_cell(units::format_percent(stats.percent.max())),
         ]);
     }
     report
@@ -1175,11 +1152,11 @@ fn disk_stats_table(bucket_seconds: i64, buckets: &BTreeMap<DateTime<Local>, Usa
                 .fg(Color::Magenta)
                 .add_attribute(Attribute::Bold),
             value_cell(stats.used.count),
-            value_cell(format_opt_bytes(stats.used.min())),
-            value_cell(format_opt_bytes(stats.used.average())),
-            value_cell(format_percent(stats.percent.min())),
-            value_cell(format_percent(stats.percent.average())),
-            value_cell(format_percent(stats.percent.max())),
+            value_cell(units::format_opt_bytes(stats.used.min())),
+            value_cell(units::format_opt_bytes(stats.used.average())),
+            value_cell(units::format_percent(stats.percent.min())),
+            value_cell(units::format_percent(stats.percent.average())),
+            value_cell(units::format_percent(stats.percent.max())),
         ]);
     }
     report
@@ -1249,35 +1226,13 @@ fn network_stats_table(
                 .fg(Color::Magenta)
                 .add_attribute(Attribute::Bold),
             value_cell(samples),
-            value_cell(format_rate(stats.rx.average())),
-            value_cell(format_rate(stats.rx.max())),
-            value_cell(format_rate(stats.tx.average())),
-            value_cell(format_rate(stats.tx.max())),
+            value_cell(units::format_rate(stats.rx.average())),
+            value_cell(units::format_rate(stats.rx.max())),
+            value_cell(units::format_rate(stats.tx.average())),
+            value_cell(units::format_rate(stats.tx.max())),
         ]);
     }
     report
-}
-
-fn format_bytes(value: f64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut val = value;
-    let mut unit = "B";
-    for next in &UNITS {
-        unit = next;
-        if val.abs() < 1024.0 || *next == "TiB" {
-            break;
-        }
-        val /= 1024.0;
-    }
-    if unit == "B" {
-        format!("{val:.0}{unit}")
-    } else {
-        format!("{val:.1}{unit}")
-    }
-}
-
-fn format_opt_bytes(value: Option<f64>) -> String {
-    value.map(format_bytes).unwrap_or_else(|| "--".to_string())
 }
 
 fn number_from_details(sample: &MetricSample, key: &str) -> Option<f64> {

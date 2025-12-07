@@ -7,6 +7,7 @@ pub mod graph;
 pub mod metrics;
 pub mod sysfs;
 pub mod timeframe;
+pub mod units;
 
 pub use collector::{collect_loop, collect_once, default_db_path, resolve_db_path};
 pub use timeframe::{build_timeframe, since_timestamp, Timeframe, TimeframeError};
