@@ -35,7 +35,7 @@ cargo doc --open                 # browse documentation locally
 
 ## Database location
 - Default: `~/.local/share/symmetri/metrics.db`
-- Override via `--db PATH` or `SYMMETRI_DB` (legacy `BATTERY_MONITOR_DB` also works).
+- Override via `--db PATH` or `SYMMETRI_DB`.
 
 ## systemd
 Sample units are in `systemd/`:

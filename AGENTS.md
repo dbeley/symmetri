@@ -31,6 +31,6 @@
 - PRs: describe scope, manual test notes (commands run, outputs/paths), linked issues, and graph screenshots when behavior changes.
 
 ## Configuration & Deployment Notes
-- Default DB: `~/.local/share/symmetri/metrics.db`; override with `--db`, `SYMMETRI_DB` (legacy `BATTERY_MONITOR_DB` supported).
+- Default DB: `~/.local/share/symmetri/metrics.db`; override with `--db`, `SYMMETRI_DB`.
 - Sample systemd units run collection every 5 minutes; adjust paths/env vars before installing to `/etc/systemd/system/` or `~/.config/systemd/user/`.
 - Graphs default to the current directory; use `--graph-path` when scripting to avoid clutter.

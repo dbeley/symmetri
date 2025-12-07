@@ -21,9 +21,7 @@ pub fn resolve_db_path(db_path: Option<&Path>) -> PathBuf {
     if let Some(path) = db_path {
         return path.to_path_buf();
     }
-    if let Ok(env_path) =
-        std::env::var("SYMMETRI_DB").or_else(|_| std::env::var("BATTERY_MONITOR_DB"))
-    {
+    if let Ok(env_path) = std::env::var("SYMMETRI_DB") {
         if let Some(stripped) = env_path.strip_prefix("~/") {
             if let Some(home) = dirs::home_dir() {
                 return home.join(stripped);
@@ -118,7 +116,7 @@ mod tests {
 
     #[test]
     fn resolve_db_path_prefers_argument() {
-        let _guard = EnvGuard::set("BATTERY_MONITOR_DB", "/tmp/should_not_use.db");
+        let _guard = EnvGuard::set("SYMMETRI_DB", "/tmp/should_not_use.db");
         let provided = PathBuf::from("/tmp/preferred.db");
         let resolved = resolve_db_path(Some(&provided));
         assert_eq!(resolved, provided);
@@ -137,12 +135,5 @@ mod tests {
         let _guard = EnvGuard::set("SYMMETRI_DB", "/tmp/from_env.db");
         let resolved = resolve_db_path(None);
         assert_eq!(resolved, PathBuf::from("/tmp/from_env.db"));
-    }
-
-    #[test]
-    fn resolve_db_path_accepts_legacy_env() {
-        let _guard = EnvGuard::set("BATTERY_MONITOR_DB", "/tmp/legacy.db");
-        let resolved = resolve_db_path(None);
-        assert_eq!(resolved, PathBuf::from("/tmp/legacy.db"));
     }
 }

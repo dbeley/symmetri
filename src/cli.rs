@@ -71,7 +71,7 @@ pub enum Commands {
         /// Ignore timeframe limits and use the entire history
         #[arg(long = "all")]
         all_time: bool,
-        /// Path to SQLite database (or set BATTERY_MONITOR_DB)
+        /// Path to SQLite database
         #[arg(long = "db")]
         db_path: Option<PathBuf>,
         /// Save a graph image with an auto-generated name
