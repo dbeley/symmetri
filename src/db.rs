@@ -5,11 +5,12 @@ use std::{collections::HashSet, str::FromStr};
 
 use anyhow::Result;
 use rusqlite::{params, Connection, Row};
+use serde::Serialize;
 
 use crate::metrics::{MetricKind, MetricSample};
 use crate::sysfs::BatteryReading;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Sample {
     pub ts: f64,
     pub percentage: Option<f64>,

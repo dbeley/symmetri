@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::fs::File;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -10,6 +11,7 @@ use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Table};
 
 use chrono::{DateTime, Local};
+use log::info;
 
 use crate::aggregate::aggregate_samples_by_timestamp;
 use crate::cli_helpers::{
@@ -94,7 +96,19 @@ pub enum Commands {
         /// Enable debug logging
         #[arg(short, long)]
         verbose: bool,
+        /// Export data to JSON or CSV format
+        #[arg(long = "export", value_name = "PATH")]
+        export_path: Option<PathBuf>,
+        /// Export format (json or csv)
+        #[arg(long = "export-format", value_enum, default_value = "json")]
+        export_format: ExportFormat,
     },
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum ExportFormat {
+    Json,
+    Csv,
 }
 
 fn configure_logging(verbose: bool) {
@@ -192,6 +206,8 @@ where
             presets,
             sensor_filters,
             verbose,
+            export_path,
+            export_format,
         } => {
             configure_logging(verbose);
             let timeframe = build_timeframe(hours as i64, days as i64, months as i64, all_time)?;
@@ -256,6 +272,10 @@ where
                         &path,
                     )?;
                 }
+            }
+
+            if let Some(path) = export_path {
+                export_data(&samples, &metric_samples, &path, export_format)?;
             }
 
             summarize(
@@ -397,6 +417,87 @@ fn summarize(
             );
         }
     }
+}
+
+fn export_data(
+    battery_samples: &[Sample],
+    metric_samples: &[MetricSample],
+    path: &Path,
+    format: ExportFormat,
+) -> Result<()> {
+    match format {
+        ExportFormat::Json => export_json(battery_samples, metric_samples, path),
+        ExportFormat::Csv => export_csv(battery_samples, metric_samples, path),
+    }
+}
+
+fn export_json(
+    battery_samples: &[Sample],
+    metric_samples: &[MetricSample],
+    path: &Path,
+) -> Result<()> {
+    use serde_json::json;
+    let data = json!({
+        "battery_samples": battery_samples,
+        "metric_samples": metric_samples,
+    });
+    let mut file = File::create(path)?;
+    file.write_all(serde_json::to_string_pretty(&data)?.as_bytes())?;
+    info!("Exported data to {}", path.display());
+    Ok(())
+}
+
+fn export_csv(
+    battery_samples: &[Sample],
+    metric_samples: &[MetricSample],
+    path: &Path,
+) -> Result<()> {
+    let mut file = File::create(path)?;
+    
+    // Write battery samples
+    if !battery_samples.is_empty() {
+        writeln!(file, "# Battery Samples")?;
+        writeln!(
+            file,
+            "timestamp,percentage,capacity_pct,health_pct,energy_now_wh,energy_full_wh,energy_full_design_wh,status,source_path"
+        )?;
+        for sample in battery_samples {
+            writeln!(
+                file,
+                "{},{},{},{},{},{},{},{},{}",
+                sample.ts,
+                sample.percentage.map(|v| v.to_string()).unwrap_or_default(),
+                sample.capacity_pct.map(|v| v.to_string()).unwrap_or_default(),
+                sample.health_pct.map(|v| v.to_string()).unwrap_or_default(),
+                sample.energy_now_wh.map(|v| v.to_string()).unwrap_or_default(),
+                sample.energy_full_wh.map(|v| v.to_string()).unwrap_or_default(),
+                sample.energy_full_design_wh.map(|v| v.to_string()).unwrap_or_default(),
+                sample.status.as_deref().unwrap_or(""),
+                sample.source_path
+            )?;
+        }
+        writeln!(file)?;
+    }
+    
+    // Write metric samples
+    if !metric_samples.is_empty() {
+        writeln!(file, "# Metric Samples")?;
+        writeln!(file, "timestamp,kind,source,value,unit")?;
+        for sample in metric_samples {
+            writeln!(
+                file,
+                "{},{},{},{},{}",
+                sample.ts,
+                sample.kind.as_str(),
+                sample.source,
+                sample.value.map(|v| v.to_string()).unwrap_or_default(),
+                sample.unit.as_deref().unwrap_or("")
+            )?;
+        }
+    }
+    
+    info!("Exported data to {}", path.display());
+    Ok(())
 }
 
 fn format_power(value: Option<f64>) -> String {
@@ -1195,5 +1296,71 @@ mod tests {
         assert_eq!(stats.used.count, 1);
         assert!((stats.used.average().unwrap() - 2048.0).abs() < 1e-6);
         assert!((stats.percent.average().unwrap() - 50.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn export_json_creates_valid_file() {
+        use tempfile::NamedTempFile;
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+
+        let samples = vec![Sample {
+            ts: 1.0,
+            percentage: Some(80.0),
+            capacity_pct: Some(95.0),
+            health_pct: Some(90.0),
+            energy_now_wh: Some(40.0),
+            energy_full_wh: Some(50.0),
+            energy_full_design_wh: Some(55.0),
+            status: Some("Discharging".to_string()),
+            source_path: "BAT0".to_string(),
+        }];
+
+        let metrics = vec![metric_sample(
+            MetricKind::CpuUsage,
+            1.0,
+            Some(50.0),
+            json!({}),
+        )];
+
+        export_json(&samples, &metrics, path).unwrap();
+
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("battery_samples"));
+        assert!(content.contains("metric_samples"));
+        assert!(content.contains("80.0"));
+    }
+
+    #[test]
+    fn export_csv_creates_valid_file() {
+        use tempfile::NamedTempFile;
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+
+        let samples = vec![Sample {
+            ts: 1.0,
+            percentage: Some(80.0),
+            capacity_pct: Some(95.0),
+            health_pct: Some(90.0),
+            energy_now_wh: Some(40.0),
+            energy_full_wh: Some(50.0),
+            energy_full_design_wh: Some(55.0),
+            status: Some("Discharging".to_string()),
+            source_path: "BAT0".to_string(),
+        }];
+
+        let metrics = vec![metric_sample(
+            MetricKind::CpuUsage,
+            1.0,
+            Some(50.0),
+            json!({}),
+        )];
+
+        export_csv(&samples, &metrics, path).unwrap();
+
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("Battery Samples"));
+        assert!(content.contains("Metric Samples"));
+        assert!(content.contains("timestamp,"));
     }
 }
