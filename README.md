@@ -53,18 +53,62 @@ By default the service writes to `/var/lib/symmetri/metrics.db` via `SYMMETRI_DB
 For a user service (no root), place the units in `~/.config/systemd/user/` and enable with `systemctl --user enable --now symmetri.timer`.
 
 ## CLI usage
+
+### Basic Collection
 ```bash
 # Collect once
 symmetri-collect
 
-# Collect repeatedly (60s interval)
+# Collect repeatedly every 60 seconds
 symmetri-collect --interval 60
 
-# Report last day and save graph with an auto-generated name in the cwd
+# Collect with custom database location
+symmetri-collect --db ~/my-metrics.db --interval 300
+```
+
+### Reporting
+```bash
+# Simple text report for the last 6 hours (default)
+symmetri-report
+
+# Report last day and save graph with auto-generated filename
 symmetri-report --days 1 --graph
 
-# Report last week and send the graph to a specific path
+# Report last week with custom graph path
 symmetri-report --days 7 --graph-path ~/battery-week.png
+
+# Report all history
+symmetri-report --all
+
+# Multi-metric report with CPU, GPU, and temperature data
+symmetri-report --days 1 --preset cpu --preset gpu --preset temperature --graph
+
+# Filter metrics by sensor name
+symmetri-report --days 1 --preset temperature --sensor "Package id 0"
+```
+
+### Data Export
+```bash
+# Export last day's data to JSON
+symmetri-report --days 1 --export data.json --export-format json
+
+# Export to CSV
+symmetri-report --days 1 --export data.csv --export-format csv
+```
+
+### Database Maintenance
+```bash
+# Show database statistics
+symmetri stats
+
+# Clean data older than 90 days (default)
+symmetri clean
+
+# Clean data older than 30 days
+symmetri clean --days 30
+
+# Dry run to see what would be deleted
+symmetri clean --days 30 --dry-run
 ```
 
 Use `--graph` to save a graph image with an informative filename in the current directory. Use `--graph-path` for a custom destination; without either flag the command prints only the textual report.

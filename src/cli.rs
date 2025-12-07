@@ -74,6 +74,15 @@ pub enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+    /// Show database statistics
+    Stats {
+        /// Path to SQLite database (or set SYMMETRI_DB)
+        #[arg(long = "db")]
+        db_path: Option<PathBuf>,
+        /// Enable debug logging
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Render a timeframe report (optionally save a graph image)
     Report {
         /// Window in hours (used when days/months are zero)
@@ -201,8 +210,15 @@ where
             verbose,
         } => {
             configure_logging(verbose);
-            if let Some(interval) = interval {
-                collect_loop(interval, db_path.as_deref(), None)?;
+            if let Some(interval_secs) = interval {
+                if interval_secs == 0 {
+                    eprintln!("Error: interval must be greater than 0");
+                    std::process::exit(1);
+                }
+                if interval_secs < 5 {
+                    log::warn!("Warning: intervals less than 5 seconds may cause high CPU usage");
+                }
+                collect_loop(interval_secs, db_path.as_deref(), None)?;
             } else {
                 let code = collect_once(db_path.as_deref(), None)?;
                 if code != 0 {
@@ -241,6 +257,69 @@ where
                 println!("Consider running VACUUM on the database to reclaim space:");
                 println!("  sqlite3 {} 'VACUUM;'", resolved.display());
             }
+        }
+        Commands::Stats { db_path, verbose } => {
+            configure_logging(verbose);
+            let resolved = resolve_db_path(db_path.as_deref());
+            
+            if !resolved.exists() {
+                println!("Database not found at: {}", resolved.display());
+                std::process::exit(1);
+            }
+            
+            let battery_count = db::count_samples(&resolved, None)?;
+            let metric_count = db::count_metric_samples(&resolved, None)?;
+            let event_count = db::count_events(&resolved, None)?;
+            
+            let mut table = themed_table();
+            table.set_header(header_cells(&["Metric", "Value"]));
+            table.add_row(vec![
+                label_cell("Database path"),
+                value_cell(resolved.display().to_string()),
+            ]);
+            
+            let metadata = std::fs::metadata(&resolved)?;
+            let size_mb = metadata.len() as f64 / (1024.0 * 1024.0);
+            table.add_row(vec![
+                label_cell("Database size"),
+                value_cell(format!("{:.2} MB", size_mb)),
+            ]);
+            
+            table.add_row(vec![
+                label_cell("Battery samples"),
+                value_cell(battery_count),
+            ]);
+            table.add_row(vec![
+                label_cell("Metric samples"),
+                value_cell(metric_count),
+            ]);
+            table.add_row(vec![
+                label_cell("Collection events"),
+                value_cell(event_count),
+            ]);
+            
+            if let Ok(oldest_battery) = db::fetch_samples(&resolved, None) {
+                if let Some(first) = oldest_battery.first() {
+                    let dt = chrono::DateTime::from_timestamp(first.ts as i64, 0)
+                        .unwrap_or_default()
+                        .with_timezone(&chrono::Local);
+                    table.add_row(vec![
+                        label_cell("Oldest battery sample"),
+                        value_cell(dt.format("%Y-%m-%d %H:%M:%S").to_string()),
+                    ]);
+                }
+                if let Some(last) = oldest_battery.last() {
+                    let dt = chrono::DateTime::from_timestamp(last.ts as i64, 0)
+                        .unwrap_or_default()
+                        .with_timezone(&chrono::Local);
+                    table.add_row(vec![
+                        label_cell("Newest battery sample"),
+                        value_cell(dt.format("%Y-%m-%d %H:%M:%S").to_string()),
+                    ]);
+                }
+            }
+            
+            println!("\nDatabase Statistics\n{}", table);
         }
         Commands::Report {
             hours,

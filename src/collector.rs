@@ -36,7 +36,9 @@ pub fn resolve_db_path(db_path: Option<&Path>) -> PathBuf {
 
 pub fn collect_once(db_path: Option<&Path>, sysfs_root: Option<&Path>) -> Result<i32> {
     let resolved_db = resolve_db_path(db_path);
-    let mut conn = db::init_db_connection(&resolved_db)?;
+    let mut conn = db::init_db_connection(&resolved_db).map_err(|e| {
+        anyhow::anyhow!("Failed to initialize database at {}: {}", resolved_db.display(), e)
+    })?;
 
     let root = sysfs_root.unwrap_or_else(|| Path::new("/sys/class/power_supply"));
     let battery_paths = find_battery_paths(root);
@@ -56,7 +58,13 @@ pub fn collect_once(db_path: Option<&Path>, sysfs_root: Option<&Path>) -> Result
     }
 
     let metric_samples = metrics::collect_metrics(ts);
-    db::insert_all_samples(&mut conn, &samples, &metric_samples)?;
+    db::insert_all_samples(&mut conn, &samples, &metric_samples).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to insert samples into database at {}: {}",
+            resolved_db.display(),
+            e
+        )
+    })?;
 
     if !samples.is_empty() {
         for sample in samples {
