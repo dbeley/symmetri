@@ -378,7 +378,7 @@ fn summarize(
             println!(
                 "\nNetwork stats ({})\n{}",
                 timeframe.label.replace('_', " "),
-                network_stats_table(bucket_seconds, &network_buckets)
+                network_totals_table(bucket_seconds, &network_buckets)
             );
         }
     }
@@ -724,6 +724,13 @@ fn bucket_network_rates(
     buckets
 }
 
+fn compute_counter_delta(prev: Option<f64>, next: Option<f64>) -> f64 {
+    match (prev, next) {
+        (Some(prev_val), Some(next_val)) if next_val >= prev_val => next_val - prev_val,
+        _ => 0.0,
+    }
+}
+
 fn bucket_network_totals(
     metrics: &[MetricSample],
     bucket_seconds: i64,
@@ -746,19 +753,15 @@ fn bucket_network_totals(
             if dt <= 0.0 {
                 continue;
             }
-            let rx_prev = number_from_details(prev, "rx_bytes");
-            let rx_next = number_from_details(next, "rx_bytes");
-            let tx_prev = number_from_details(prev, "tx_bytes");
-            let tx_next = number_from_details(next, "tx_bytes");
             
-            let rx_delta = match (rx_prev, rx_next) {
-                (Some(prev_val), Some(next_val)) if next_val >= prev_val => next_val - prev_val,
-                _ => 0.0,
-            };
-            let tx_delta = match (tx_prev, tx_next) {
-                (Some(prev_val), Some(next_val)) if next_val >= prev_val => next_val - prev_val,
-                _ => 0.0,
-            };
+            let rx_delta = compute_counter_delta(
+                number_from_details(prev, "rx_bytes"),
+                number_from_details(next, "rx_bytes"),
+            );
+            let tx_delta = compute_counter_delta(
+                number_from_details(prev, "tx_bytes"),
+                number_from_details(next, "tx_bytes"),
+            );
             
             if rx_delta > 0.0 || tx_delta > 0.0 {
                 let bucket = bucket_start(next.ts, bucket_seconds);
@@ -1068,7 +1071,7 @@ fn temperature_stats_table(bucket_seconds: i64, buckets: &SourceBuckets) -> Tabl
     report
 }
 
-fn network_stats_table(
+fn network_totals_table(
     bucket_seconds: i64,
     buckets: &BTreeMap<DateTime<Local>, TransferStats>,
 ) -> Table {
