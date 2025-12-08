@@ -92,3 +92,13 @@ nix develop -c cargo test         # run unit tests
 - If you have multiple batteries, each record is stored with its sysfs path (`source_path`) and reports aggregate the totals per collection
 - Additional metrics are pulled from `/proc` + `/sys` (CPU/GPU load + clocks, network counters, memory/disk usage, thermal zones, hwmon power)
 - SQLite schema and helpers live in `src/db.rs`
+
+## Sample Output
+
+Example of graphs produced by a symmetri report ran on a laptop:
+
+```
+symmetri report --preset battery --preset cpu --preset gpu --preset memory --preset network --preset temperature --preset disk -g --hours 4
+```
+
+![sample image](docs/symmetri_last_4_hours_sample_image.png)

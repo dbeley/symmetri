@@ -15,5 +15,4 @@ __pycache__/
 
 # Local data and generated outputs
 *.db
-*.png
 target
