@@ -178,7 +178,7 @@ fn build_charts(
     }
 
     if presets.contains(&ReportPreset::Network) {
-        let (rx, tx) = network_total_series(metrics);
+        let (rx, tx) = network_bucket_series(metrics, timeframe);
         let mut series = Vec::new();
         if !rx.is_empty() {
             series.push(MetricSeries {
@@ -361,7 +361,10 @@ where
     series
 }
 
-fn network_total_series(metrics: &[MetricSample]) -> (SeriesPoints, SeriesPoints) {
+fn network_bucket_series(metrics: &[MetricSample], timeframe: &Timeframe) -> (SeriesPoints, SeriesPoints) {
+    use crate::cli_helpers::{bucket_span_seconds, bucket_start};
+    use chrono::Local;
+    
     let mut by_iface: BTreeMap<&str, Vec<&MetricSample>> = BTreeMap::new();
     for sample in metrics
         .iter()
@@ -393,28 +396,51 @@ fn network_total_series(metrics: &[MetricSample]) -> (SeriesPoints, SeriesPoints
             );
             
             if rx_delta > 0.0 || tx_delta > 0.0 {
-                if let Some(ts) = ts_to_datetime(next.ts) {
-                    all_deltas.push((ts, rx_delta, tx_delta));
-                }
+                all_deltas.push((next.ts, rx_delta, tx_delta));
             }
         }
     }
     
-    // Sort all deltas by timestamp
-    all_deltas.sort_by_key(|(ts, _, _)| *ts);
+    // Determine data span for bucket size calculation
+    let data_span = if let (Some(first), Some(last)) = (
+        all_deltas.iter().map(|(ts, _, _)| ts).min_by(|a, b| a.partial_cmp(b).unwrap()),
+        all_deltas.iter().map(|(ts, _, _)| ts).max_by(|a, b| a.partial_cmp(b).unwrap())
+    ) {
+        Some(last - first)
+    } else {
+        None
+    };
     
-    // Compute cumulative totals across all interfaces
-    let mut rx_series = Vec::new();
-    let mut tx_series = Vec::new();
-    let mut rx_cumulative = 0.0;
-    let mut tx_cumulative = 0.0;
+    let bucket_seconds = bucket_span_seconds(timeframe, data_span);
+    
+    // Group deltas by time bucket and sum them
+    let mut rx_buckets: BTreeMap<DateTime<Local>, f64> = BTreeMap::new();
+    let mut tx_buckets: BTreeMap<DateTime<Local>, f64> = BTreeMap::new();
     
     for (ts, rx_delta, tx_delta) in all_deltas {
-        rx_cumulative += rx_delta;
-        tx_cumulative += tx_delta;
-        rx_series.push((ts, rx_cumulative / 1_048_576.0)); // Convert to MiB
-        tx_series.push((ts, tx_cumulative / 1_048_576.0)); // Convert to MiB
+        let bucket = bucket_start(ts, bucket_seconds);
+        *rx_buckets.entry(bucket).or_insert(0.0) += rx_delta;
+        *tx_buckets.entry(bucket).or_insert(0.0) += tx_delta;
     }
+    
+    // Convert to series points
+    let mut rx_series = Vec::new();
+    let mut tx_series = Vec::new();
+    
+    for (bucket, total) in rx_buckets {
+        if let Some(utc_ts) = ts_to_datetime(bucket.timestamp() as f64) {
+            rx_series.push((utc_ts, total / 1_048_576.0)); // Convert to MiB
+        }
+    }
+    
+    for (bucket, total) in tx_buckets {
+        if let Some(utc_ts) = ts_to_datetime(bucket.timestamp() as f64) {
+            tx_series.push((utc_ts, total / 1_048_576.0)); // Convert to MiB
+        }
+    }
+    
+    rx_series.sort_by_key(|(ts, _)| *ts);
+    tx_series.sort_by_key(|(ts, _)| *ts);
     
     (rx_series, tx_series)
 }
