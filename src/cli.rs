@@ -288,7 +288,6 @@ fn summarize(
         .and_then(|sample| estimate_runtime_hours(avg_discharge_w, sample));
     let power_draw_by_bucket =
         bucket_stats_for_kind(metrics, MetricKind::PowerDraw, bucket_seconds);
-    let network_rates = compute_network_rates(metrics);
 
     if presets.contains(&ReportPreset::Battery) {
         println!(
@@ -372,14 +371,14 @@ fn summarize(
     }
 
     if presets.contains(&ReportPreset::Network) {
-        let network_buckets = bucket_network_rates(&network_rates, bucket_seconds);
+        let network_buckets = bucket_network_totals(metrics, bucket_seconds);
         if network_buckets.is_empty() {
             println!("\nNo network samples available for {timeframe_label}.");
         } else {
             println!(
                 "\nNetwork stats ({})\n{}",
                 timeframe.label.replace('_', " "),
-                network_stats_table(bucket_seconds, &network_buckets)
+                network_totals_table(bucket_seconds, &network_buckets)
             );
         }
     }
@@ -451,6 +450,7 @@ fn format_percent(value: Option<f64>) -> String {
         .unwrap_or_else(|| "--".to_string())
 }
 
+#[cfg(test)]
 fn format_rate(value: Option<f64>) -> String {
     value
         .map(|v| format!("{}/s", format_bytes(v)))
@@ -517,15 +517,30 @@ impl UsageStats {
 }
 
 #[derive(Default, Clone)]
+#[cfg(test)]
 struct RateStats {
     rx: NumberStats,
     tx: NumberStats,
 }
 
+#[cfg(test)]
 impl RateStats {
     fn record(&mut self, rx: Option<f64>, tx: Option<f64>) {
         self.rx.record_opt(rx);
         self.tx.record_opt(tx);
+    }
+}
+
+#[derive(Default, Clone)]
+struct TransferStats {
+    rx_total: f64,
+    tx_total: f64,
+}
+
+impl TransferStats {
+    fn record(&mut self, rx: f64, tx: f64) {
+        self.rx_total += rx;
+        self.tx_total += tx;
     }
 }
 
@@ -635,12 +650,14 @@ fn bucket_usage_stats(
     buckets
 }
 
+#[cfg(test)]
 struct NetworkRateSample {
     ts: f64,
     rx_rate: Option<f64>,
     tx_rate: Option<f64>,
 }
 
+#[cfg(test)]
 fn rate_from_counters(previous: Option<f64>, current: Option<f64>, dt: f64) -> Option<f64> {
     match (previous, current) {
         (Some(prev), Some(next)) if next >= prev && dt > 0.0 => Some((next - prev) / dt),
@@ -648,6 +665,7 @@ fn rate_from_counters(previous: Option<f64>, current: Option<f64>, dt: f64) -> O
     }
 }
 
+#[cfg(test)]
 fn compute_network_rates(metrics: &[MetricSample]) -> Vec<NetworkRateSample> {
     let mut by_iface: BTreeMap<&str, Vec<&MetricSample>> = BTreeMap::new();
     for sample in metrics
@@ -690,6 +708,7 @@ fn compute_network_rates(metrics: &[MetricSample]) -> Vec<NetworkRateSample> {
     rates
 }
 
+#[cfg(test)]
 fn bucket_network_rates(
     rates: &[NetworkRateSample],
     bucket_seconds: i64,
@@ -701,6 +720,57 @@ fn bucket_network_rates(
             .entry(bucket)
             .or_default()
             .record(rate.rx_rate, rate.tx_rate);
+    }
+    buckets
+}
+
+fn compute_counter_delta(prev: Option<f64>, next: Option<f64>) -> f64 {
+    match (prev, next) {
+        (Some(prev_val), Some(next_val)) if next_val >= prev_val => next_val - prev_val,
+        _ => 0.0,
+    }
+}
+
+fn bucket_network_totals(
+    metrics: &[MetricSample],
+    bucket_seconds: i64,
+) -> BTreeMap<DateTime<Local>, TransferStats> {
+    let mut by_iface: BTreeMap<&str, Vec<&MetricSample>> = BTreeMap::new();
+    for sample in metrics
+        .iter()
+        .filter(|s| s.kind == MetricKind::NetworkBytes)
+    {
+        by_iface.entry(&sample.source).or_default().push(sample);
+    }
+
+    let mut buckets: BTreeMap<DateTime<Local>, TransferStats> = BTreeMap::new();
+    for (_iface, mut samples) in by_iface {
+        samples.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
+        for window in samples.windows(2) {
+            let prev = window[0];
+            let next = window[1];
+            let dt = next.ts - prev.ts;
+            if dt <= 0.0 {
+                continue;
+            }
+            
+            let rx_delta = compute_counter_delta(
+                number_from_details(prev, "rx_bytes"),
+                number_from_details(next, "rx_bytes"),
+            );
+            let tx_delta = compute_counter_delta(
+                number_from_details(prev, "tx_bytes"),
+                number_from_details(next, "tx_bytes"),
+            );
+            
+            if rx_delta > 0.0 || tx_delta > 0.0 {
+                let bucket = bucket_start(next.ts, bucket_seconds);
+                buckets
+                    .entry(bucket)
+                    .or_default()
+                    .record(rx_delta, tx_delta);
+            }
+        }
     }
     buckets
 }
@@ -1001,31 +1071,24 @@ fn temperature_stats_table(bucket_seconds: i64, buckets: &SourceBuckets) -> Tabl
     report
 }
 
-fn network_stats_table(
+fn network_totals_table(
     bucket_seconds: i64,
-    buckets: &BTreeMap<DateTime<Local>, RateStats>,
+    buckets: &BTreeMap<DateTime<Local>, TransferStats>,
 ) -> Table {
     let mut report = themed_table();
     report.set_header(header_cells(&[
         "Window",
-        "Samples",
-        "Avg down",
-        "Peak down",
-        "Avg up",
-        "Peak up",
+        "Total down",
+        "Total up",
     ]));
 
     for (key, stats) in buckets {
-        let samples = stats.rx.count.max(stats.tx.count);
         report.add_row(vec![
             Cell::new(format_bucket(*key, bucket_seconds))
                 .fg(Color::Magenta)
                 .add_attribute(Attribute::Bold),
-            value_cell(samples),
-            value_cell(format_rate(stats.rx.average())),
-            value_cell(format_rate(stats.rx.max())),
-            value_cell(format_rate(stats.tx.average())),
-            value_cell(format_rate(stats.tx.max())),
+            value_cell(format_bytes(stats.rx_total)),
+            value_cell(format_bytes(stats.tx_total)),
         ]);
     }
     report
@@ -1142,6 +1205,42 @@ mod tests {
         let rate = &rates[0];
         assert!((rate.rx_rate.unwrap() - 200.0).abs() < 1e-6);
         assert!((rate.tx_rate.unwrap() - 100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn network_totals_compute_transferred_bytes() {
+        let metrics = vec![
+            metric_sample(
+                MetricKind::NetworkBytes,
+                0.0,
+                Some(1000.0),
+                json!({"rx_bytes": 1_000.0, "tx_bytes": 500.0}),
+            ),
+            metric_sample(
+                MetricKind::NetworkBytes,
+                10.0,
+                Some(4000.0),
+                json!({"rx_bytes": 3_000.0, "tx_bytes": 1_500.0}),
+            ),
+            metric_sample(
+                MetricKind::NetworkBytes,
+                20.0,
+                Some(8000.0),
+                json!({"rx_bytes": 7_000.0, "tx_bytes": 3_000.0}),
+            ),
+        ];
+
+        let totals = bucket_network_totals(&metrics, 60);
+        assert!(!totals.is_empty());
+        
+        // Sum up all totals across buckets
+        let total_rx: f64 = totals.values().map(|s| s.rx_total).sum();
+        let total_tx: f64 = totals.values().map(|s| s.tx_total).sum();
+        
+        // Total RX: (3000-1000) + (7000-3000) = 2000 + 4000 = 6000
+        assert!((total_rx - 6000.0).abs() < 1e-6);
+        // Total TX: (1500-500) + (3000-1500) = 1000 + 1500 = 2500
+        assert!((total_tx - 2500.0).abs() < 1e-6);
     }
 
     #[test]

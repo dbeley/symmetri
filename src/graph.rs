@@ -178,7 +178,7 @@ fn build_charts(
     }
 
     if presets.contains(&ReportPreset::Network) {
-        let (rx, tx) = network_rate_series(metrics);
+        let (rx, tx) = network_bucket_series(metrics, timeframe);
         let mut series = Vec::new();
         if !rx.is_empty() {
             series.push(MetricSeries {
@@ -194,8 +194,8 @@ fn build_charts(
         }
         if !series.is_empty() {
             charts.push(ChartSpec {
-                title: format!("Network throughput ({label})"),
-                y_desc: "MiB/s".to_string(),
+                title: format!("Network data transferred ({label})"),
+                y_desc: "MiB".to_string(),
                 series,
             });
         }
@@ -361,7 +361,10 @@ where
     series
 }
 
-fn network_rate_series(metrics: &[MetricSample]) -> (SeriesPoints, SeriesPoints) {
+fn network_bucket_series(metrics: &[MetricSample], timeframe: &Timeframe) -> (SeriesPoints, SeriesPoints) {
+    use crate::cli_helpers::{bucket_span_seconds, bucket_start};
+    use chrono::Local;
+    
     let mut by_iface: BTreeMap<&str, Vec<&MetricSample>> = BTreeMap::new();
     for sample in metrics
         .iter()
@@ -370,10 +373,11 @@ fn network_rate_series(metrics: &[MetricSample]) -> (SeriesPoints, SeriesPoints)
         by_iface.entry(&sample.source).or_default().push(sample);
     }
 
-    let mut rx_series = Vec::new();
-    let mut tx_series = Vec::new();
+    // Collect all deltas with timestamps across all interfaces
+    let mut all_deltas = Vec::new();
     for (_iface, mut samples) in by_iface {
         samples.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
+        
         for window in samples.windows(2) {
             let prev = window[0];
             let next = window[1];
@@ -381,37 +385,70 @@ fn network_rate_series(metrics: &[MetricSample]) -> (SeriesPoints, SeriesPoints)
             if dt <= 0.0 {
                 continue;
             }
-            let rx_rate = rate_from_counters(
+            
+            let rx_delta = counter_delta(
                 detail_number(prev, "rx_bytes"),
                 detail_number(next, "rx_bytes"),
-                dt,
             );
-            let tx_rate = rate_from_counters(
+            let tx_delta = counter_delta(
                 detail_number(prev, "tx_bytes"),
                 detail_number(next, "tx_bytes"),
-                dt,
             );
-            let ts = match ts_to_datetime(next.ts) {
-                Some(v) => v,
-                None => continue,
-            };
-            if let Some(rx) = rx_rate {
-                rx_series.push((ts, rx / 1_048_576.0));
-            }
-            if let Some(tx) = tx_rate {
-                tx_series.push((ts, tx / 1_048_576.0));
+            
+            if rx_delta > 0.0 || tx_delta > 0.0 {
+                all_deltas.push((next.ts, rx_delta, tx_delta));
             }
         }
     }
+    
+    // Determine data span for bucket size calculation
+    let data_span = if let (Some(first), Some(last)) = (
+        all_deltas.iter().map(|(ts, _, _)| ts).min_by(|a, b| a.partial_cmp(b).unwrap()),
+        all_deltas.iter().map(|(ts, _, _)| ts).max_by(|a, b| a.partial_cmp(b).unwrap())
+    ) {
+        Some(last - first)
+    } else {
+        None
+    };
+    
+    let bucket_seconds = bucket_span_seconds(timeframe, data_span);
+    
+    // Group deltas by time bucket and sum them
+    let mut rx_buckets: BTreeMap<DateTime<Local>, f64> = BTreeMap::new();
+    let mut tx_buckets: BTreeMap<DateTime<Local>, f64> = BTreeMap::new();
+    
+    for (ts, rx_delta, tx_delta) in all_deltas {
+        let bucket = bucket_start(ts, bucket_seconds);
+        *rx_buckets.entry(bucket).or_insert(0.0) += rx_delta;
+        *tx_buckets.entry(bucket).or_insert(0.0) += tx_delta;
+    }
+    
+    // Convert to series points
+    let mut rx_series = Vec::new();
+    let mut tx_series = Vec::new();
+    
+    for (bucket, total) in rx_buckets {
+        if let Some(utc_ts) = ts_to_datetime(bucket.timestamp() as f64) {
+            rx_series.push((utc_ts, total / 1_048_576.0)); // Convert to MiB
+        }
+    }
+    
+    for (bucket, total) in tx_buckets {
+        if let Some(utc_ts) = ts_to_datetime(bucket.timestamp() as f64) {
+            tx_series.push((utc_ts, total / 1_048_576.0)); // Convert to MiB
+        }
+    }
+    
     rx_series.sort_by_key(|(ts, _)| *ts);
     tx_series.sort_by_key(|(ts, _)| *ts);
+    
     (rx_series, tx_series)
 }
 
-fn rate_from_counters(previous: Option<f64>, current: Option<f64>, dt: f64) -> Option<f64> {
+fn counter_delta(previous: Option<f64>, current: Option<f64>) -> f64 {
     match (previous, current) {
-        (Some(prev), Some(next)) if next >= prev && dt > 0.0 => Some((next - prev) / dt),
-        _ => None,
+        (Some(prev), Some(next)) if next >= prev => next - prev,
+        _ => 0.0,
     }
 }
 
