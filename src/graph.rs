@@ -178,7 +178,7 @@ fn build_charts(
     }
 
     if presets.contains(&ReportPreset::Network) {
-        let (rx, tx) = network_rate_series(metrics);
+        let (rx, tx) = network_total_series(metrics);
         let mut series = Vec::new();
         if !rx.is_empty() {
             series.push(MetricSeries {
@@ -194,8 +194,8 @@ fn build_charts(
         }
         if !series.is_empty() {
             charts.push(ChartSpec {
-                title: format!("Network throughput ({label})"),
-                y_desc: "MiB/s".to_string(),
+                title: format!("Network data transferred ({label})"),
+                y_desc: "MiB".to_string(),
                 series,
             });
         }
@@ -361,7 +361,7 @@ where
     series
 }
 
-fn network_rate_series(metrics: &[MetricSample]) -> (SeriesPoints, SeriesPoints) {
+fn network_total_series(metrics: &[MetricSample]) -> (SeriesPoints, SeriesPoints) {
     let mut by_iface: BTreeMap<&str, Vec<&MetricSample>> = BTreeMap::new();
     for sample in metrics
         .iter()
@@ -374,6 +374,9 @@ fn network_rate_series(metrics: &[MetricSample]) -> (SeriesPoints, SeriesPoints)
     let mut tx_series = Vec::new();
     for (_iface, mut samples) in by_iface {
         samples.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
+        let mut rx_cumulative = 0.0;
+        let mut tx_cumulative = 0.0;
+        
         for window in samples.windows(2) {
             let prev = window[0];
             let next = window[1];
@@ -381,25 +384,29 @@ fn network_rate_series(metrics: &[MetricSample]) -> (SeriesPoints, SeriesPoints)
             if dt <= 0.0 {
                 continue;
             }
-            let rx_rate = rate_from_counters(
+            
+            let rx_delta = counter_delta(
                 detail_number(prev, "rx_bytes"),
                 detail_number(next, "rx_bytes"),
-                dt,
             );
-            let tx_rate = rate_from_counters(
+            let tx_delta = counter_delta(
                 detail_number(prev, "tx_bytes"),
                 detail_number(next, "tx_bytes"),
-                dt,
             );
+            
+            rx_cumulative += rx_delta;
+            tx_cumulative += tx_delta;
+            
             let ts = match ts_to_datetime(next.ts) {
                 Some(v) => v,
                 None => continue,
             };
-            if let Some(rx) = rx_rate {
-                rx_series.push((ts, rx / 1_048_576.0));
+            
+            if rx_delta > 0.0 {
+                rx_series.push((ts, rx_cumulative / 1_048_576.0)); // Convert to MiB
             }
-            if let Some(tx) = tx_rate {
-                tx_series.push((ts, tx / 1_048_576.0));
+            if tx_delta > 0.0 {
+                tx_series.push((ts, tx_cumulative / 1_048_576.0)); // Convert to MiB
             }
         }
     }
@@ -408,10 +415,10 @@ fn network_rate_series(metrics: &[MetricSample]) -> (SeriesPoints, SeriesPoints)
     (rx_series, tx_series)
 }
 
-fn rate_from_counters(previous: Option<f64>, current: Option<f64>, dt: f64) -> Option<f64> {
+fn counter_delta(previous: Option<f64>, current: Option<f64>) -> f64 {
     match (previous, current) {
-        (Some(prev), Some(next)) if next >= prev && dt > 0.0 => Some((next - prev) / dt),
-        _ => None,
+        (Some(prev), Some(next)) if next >= prev => next - prev,
+        _ => 0.0,
     }
 }
 
