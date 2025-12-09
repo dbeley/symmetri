@@ -370,12 +370,10 @@ fn network_total_series(metrics: &[MetricSample]) -> (SeriesPoints, SeriesPoints
         by_iface.entry(&sample.source).or_default().push(sample);
     }
 
-    let mut rx_series = Vec::new();
-    let mut tx_series = Vec::new();
+    // Collect all deltas with timestamps across all interfaces
+    let mut all_deltas = Vec::new();
     for (_iface, mut samples) in by_iface {
         samples.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
-        let mut rx_cumulative = 0.0;
-        let mut tx_cumulative = 0.0;
         
         for window in samples.windows(2) {
             let prev = window[0];
@@ -394,24 +392,30 @@ fn network_total_series(metrics: &[MetricSample]) -> (SeriesPoints, SeriesPoints
                 detail_number(next, "tx_bytes"),
             );
             
-            rx_cumulative += rx_delta;
-            tx_cumulative += tx_delta;
-            
-            let ts = match ts_to_datetime(next.ts) {
-                Some(v) => v,
-                None => continue,
-            };
-            
-            if rx_delta > 0.0 {
-                rx_series.push((ts, rx_cumulative / 1_048_576.0)); // Convert to MiB
-            }
-            if tx_delta > 0.0 {
-                tx_series.push((ts, tx_cumulative / 1_048_576.0)); // Convert to MiB
+            if rx_delta > 0.0 || tx_delta > 0.0 {
+                if let Some(ts) = ts_to_datetime(next.ts) {
+                    all_deltas.push((ts, rx_delta, tx_delta));
+                }
             }
         }
     }
-    rx_series.sort_by_key(|(ts, _)| *ts);
-    tx_series.sort_by_key(|(ts, _)| *ts);
+    
+    // Sort all deltas by timestamp
+    all_deltas.sort_by_key(|(ts, _, _)| *ts);
+    
+    // Compute cumulative totals across all interfaces
+    let mut rx_series = Vec::new();
+    let mut tx_series = Vec::new();
+    let mut rx_cumulative = 0.0;
+    let mut tx_cumulative = 0.0;
+    
+    for (ts, rx_delta, tx_delta) in all_deltas {
+        rx_cumulative += rx_delta;
+        tx_cumulative += tx_delta;
+        rx_series.push((ts, rx_cumulative / 1_048_576.0)); // Convert to MiB
+        tx_series.push((ts, tx_cumulative / 1_048_576.0)); // Convert to MiB
+    }
+    
     (rx_series, tx_series)
 }
 
