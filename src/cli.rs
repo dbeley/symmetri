@@ -14,7 +14,7 @@ use chrono::{DateTime, Local};
 use crate::aggregate::aggregate_samples_by_timestamp;
 use crate::cli_helpers::{
     average_rates, bucket_span_seconds, bucket_start, default_graph_path, estimate_runtime_hours,
-    format_runtime,
+    format_runtime, is_charging, is_discharging,
 };
 use crate::collector::{collect_loop, collect_once, resolve_db_path};
 use crate::db::{self, Sample};
@@ -304,10 +304,18 @@ fn summarize(
         if timeframe_samples.is_empty() {
             println!("\nNo battery samples available for buckets in {timeframe_label}.");
         } else {
+            let (discharge_rates, charge_rates) =
+                battery_rate_buckets(timeframe_samples, bucket_seconds);
             println!(
                 "\nBattery stats ({})\n{}",
                 timeframe.label.replace('_', " "),
-                battery_stats_table(timeframe_samples, &power_draw_by_bucket, bucket_seconds)
+                battery_stats_table(
+                    timeframe_samples,
+                    &power_draw_by_bucket,
+                    &discharge_rates,
+                    &charge_rates,
+                    bucket_seconds
+                )
             );
         }
     }
@@ -808,9 +816,61 @@ fn battery_summary_table(
     table
 }
 
+fn battery_rate_buckets(
+    samples: &[Sample],
+    bucket_seconds: i64,
+) -> (
+    BTreeMap<DateTime<Local>, NumberStats>,
+    BTreeMap<DateTime<Local>, NumberStats>,
+) {
+    const MAX_GAP_HOURS: f64 = 5.0 / 60.0;
+
+    let mut discharge = BTreeMap::new();
+    let mut charge = BTreeMap::new();
+    let mut iter = samples.iter();
+    let mut previous = match iter.next() {
+        Some(sample) => sample,
+        None => return (discharge, charge),
+    };
+
+    for current in iter {
+        if current.ts < previous.ts {
+            previous = current;
+            continue;
+        }
+        let (Some(prev_now), Some(curr_now)) = (previous.energy_now_wh, current.energy_now_wh)
+        else {
+            previous = current;
+            continue;
+        };
+        let dt_hours = (current.ts - previous.ts) / 3600.0;
+        if dt_hours <= 0.0 || dt_hours > MAX_GAP_HOURS {
+            previous = current;
+            continue;
+        }
+        let bucket = bucket_start(current.ts, bucket_seconds);
+        if curr_now > prev_now && is_charging(previous) && is_charging(current) {
+            charge
+                .entry(bucket)
+                .or_default()
+                .record((curr_now - prev_now) / dt_hours);
+        } else if curr_now < prev_now && is_discharging(previous) && is_discharging(current) {
+            discharge
+                .entry(bucket)
+                .or_default()
+                .record((prev_now - curr_now) / dt_hours);
+        }
+        previous = current;
+    }
+
+    (discharge, charge)
+}
+
 fn battery_stats_table(
     samples: &[Sample],
     power_draw: &BTreeMap<DateTime<Local>, NumberStats>,
+    discharge_rates: &BTreeMap<DateTime<Local>, NumberStats>,
+    charge_rates: &BTreeMap<DateTime<Local>, NumberStats>,
     bucket_seconds: i64,
 ) -> Table {
     let mut buckets: BTreeMap<DateTime<Local>, Vec<&Sample>> = BTreeMap::new();
@@ -839,10 +899,15 @@ fn battery_stats_table(
             .and_then(|s| s.status.as_deref())
             .unwrap_or("unknown");
         let rates = average_rates(bucket_samples.iter().copied());
-        let draw = power_draw
+        let discharge_power = discharge_rates
             .get(&bucket_start)
             .and_then(NumberStats::average)
+            .or_else(|| power_draw.get(&bucket_start).and_then(NumberStats::average))
             .or(rates.discharge_w);
+        let charge_power = charge_rates
+            .get(&bucket_start)
+            .and_then(NumberStats::average)
+            .or(rates.charge_w);
         report.add_row(vec![
             Cell::new(format_bucket(bucket_start, bucket_seconds))
                 .fg(Color::Magenta)
@@ -851,8 +916,8 @@ fn battery_stats_table(
             value_cell(min_pct),
             value_cell(avg_pct),
             value_cell(max_pct),
-            value_cell(format_power(draw)),
-            value_cell(format_power(rates.charge_w)),
+            value_cell(format_power(discharge_power)),
+            value_cell(format_power(charge_power)),
             status_cell(Some(latest_status)),
         ]);
     }
@@ -1183,6 +1248,20 @@ mod tests {
         metric_sample_with_source(kind, "test", ts, value, details)
     }
 
+    fn battery_sample(ts: f64, energy_now_wh: f64, status: &str) -> Sample {
+        Sample {
+            ts,
+            percentage: None,
+            capacity_pct: None,
+            health_pct: None,
+            energy_now_wh: Some(energy_now_wh),
+            energy_full_wh: Some(20.0),
+            energy_full_design_wh: Some(22.0),
+            status: Some(status.to_string()),
+            source_path: "BAT0".to_string(),
+        }
+    }
+
     #[test]
     fn network_rates_compute_per_second() {
         let metrics = vec![
@@ -1294,5 +1373,31 @@ mod tests {
         assert_eq!(stats.used.count, 1);
         assert!((stats.used.average().unwrap() - 2048.0).abs() < 1e-6);
         assert!((stats.percent.average().unwrap() - 50.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn battery_rate_buckets_capture_charging_segments() {
+        let samples = vec![
+            battery_sample(0.0, 10.0, "Charging"),
+            battery_sample(300.0, 11.0, "Charging"),
+            battery_sample(600.0, 12.5, "Charging"),
+        ];
+
+        let (discharge, charge) = battery_rate_buckets(&samples, 300);
+
+        assert!(discharge.is_empty());
+        let first_bucket = bucket_start(samples[1].ts, 300);
+        let second_bucket = bucket_start(samples[2].ts, 300);
+        let first_rate = charge
+            .get(&first_bucket)
+            .and_then(NumberStats::average)
+            .unwrap();
+        let second_rate = charge
+            .get(&second_bucket)
+            .and_then(NumberStats::average)
+            .unwrap();
+
+        assert!((first_rate - 12.0).abs() < 1e-6);
+        assert!((second_rate - 18.0).abs() < 1e-6);
     }
 }

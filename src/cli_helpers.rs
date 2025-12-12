@@ -132,7 +132,7 @@ pub fn average_rates<'a>(samples: impl IntoIterator<Item = &'a Sample>) -> Avera
     }
 }
 
-fn is_discharging(sample: &Sample) -> bool {
+pub(crate) fn is_discharging(sample: &Sample) -> bool {
     sample
         .status
         .as_deref()
@@ -140,7 +140,7 @@ fn is_discharging(sample: &Sample) -> bool {
         .unwrap_or(true)
 }
 
-fn is_charging(sample: &Sample) -> bool {
+pub(crate) fn is_charging(sample: &Sample) -> bool {
     sample
         .status
         .as_deref()
