@@ -34,7 +34,7 @@
             pkgs.gcc
             pkgs.pkg-config
             pkgs.fontconfig
-            pkgs.pre-commit
+            pkgs.prek
             pkgs.typos
             pkgs.hyperfine
           ];

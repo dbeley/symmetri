@@ -7,17 +7,17 @@
 - `battery_*.png` / `symmetri_*.png`: generated report artifacts; safe to delete and excluded from tests.
 
 ## Build, Test, and Development Commands
-- `nix develop`: enter the dev shell (fish) with Rust toolchain, pkg-config, fontconfig, pre-commit.
+- `nix develop`: enter the dev shell (fish) with Rust toolchain, pkg-config, fontconfig, prek.
 - `nix run . -- collect --help`: show CLI help; swap `collect` or `report` to run.
 - `cargo test` or `nix develop -c cargo test`: run tests.
-- `nix develop -c pre-commit run --all-files`: lint/spell-check before commits.
+- `nix develop -c prek run --all-files`: lint/spell-check before commits.
 - `symmetri-report --days 1 --graph`: smoke test reporting when a DB exists.
 
 ## Coding Style & Naming Conventions
 - Rust 2021 edition; 4-space indentation; prefer clear naming and small modules.
 - Patterns: CLI in `cli.rs`, IO in `collector.rs`/`sysfs.rs`/`metrics.rs`, DB access in `db.rs`, rendering in `graph.rs`.
 - Naming: snake_case for code, lowercase-dash for CLI flags, safe filenames via `default_graph_path`.
-- Run `cargo fmt`, `cargo clippy`, and `typos` (pre-commit) to keep formatting and spelling consistent.
+- Run `cargo fmt`, `cargo clippy`, and `typos` to keep formatting and spelling consistent.
 
 ## Testing Guidelines
 - Tests live alongside code in `src/*.rs` (unit tests).
@@ -27,7 +27,7 @@
 
 ## Commit & Pull Request Guidelines
 - Use short, imperative subjects (e.g., “Simplify image output CLI”); add body for rationale when helpful.
-- Keep commits cohesive (code + tests + docs) and ensure pre-commit passes.
+- Keep commits cohesive (code + tests + docs) and ensure pre-commit checks passes.
 - PRs: describe scope, manual test notes (commands run, outputs/paths), linked issues, and graph screenshots when behavior changes.
 
 ## Configuration & Deployment Notes

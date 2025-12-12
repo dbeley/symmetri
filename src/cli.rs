@@ -458,13 +458,6 @@ fn format_percent(value: Option<f64>) -> String {
         .unwrap_or_else(|| "--".to_string())
 }
 
-#[cfg(test)]
-fn format_rate(value: Option<f64>) -> String {
-    value
-        .map(|v| format!("{}/s", format_bytes(v)))
-        .unwrap_or_else(|| "--".to_string())
-}
-
 #[derive(Default, Clone)]
 struct NumberStats {
     total: f64,
@@ -521,21 +514,6 @@ impl UsageStats {
                 }
             }
         }
-    }
-}
-
-#[derive(Default, Clone)]
-#[cfg(test)]
-struct RateStats {
-    rx: NumberStats,
-    tx: NumberStats,
-}
-
-#[cfg(test)]
-impl RateStats {
-    fn record(&mut self, rx: Option<f64>, tx: Option<f64>) {
-        self.rx.record_opt(rx);
-        self.tx.record_opt(tx);
     }
 }
 
@@ -660,7 +638,6 @@ fn bucket_usage_stats(
 
 #[cfg(test)]
 struct NetworkRateSample {
-    ts: f64,
     rx_rate: Option<f64>,
     tx_rate: Option<f64>,
 }
@@ -706,30 +683,10 @@ fn compute_network_rates(metrics: &[MetricSample]) -> Vec<NetworkRateSample> {
             if rx_rate.is_none() && tx_rate.is_none() {
                 continue;
             }
-            rates.push(NetworkRateSample {
-                ts: next.ts,
-                rx_rate,
-                tx_rate,
-            });
+            rates.push(NetworkRateSample { rx_rate, tx_rate });
         }
     }
     rates
-}
-
-#[cfg(test)]
-fn bucket_network_rates(
-    rates: &[NetworkRateSample],
-    bucket_seconds: i64,
-) -> BTreeMap<DateTime<Local>, RateStats> {
-    let mut buckets: BTreeMap<DateTime<Local>, RateStats> = BTreeMap::new();
-    for rate in rates {
-        let bucket = bucket_start(rate.ts, bucket_seconds);
-        buckets
-            .entry(bucket)
-            .or_default()
-            .record(rate.rx_rate, rate.tx_rate);
-    }
-    buckets
 }
 
 fn compute_counter_delta(prev: Option<f64>, next: Option<f64>) -> f64 {
@@ -761,7 +718,7 @@ fn bucket_network_totals(
             if dt <= 0.0 {
                 continue;
             }
-            
+
             let rx_delta = compute_counter_delta(
                 number_from_details(prev, "rx_bytes"),
                 number_from_details(next, "rx_bytes"),
@@ -770,7 +727,7 @@ fn bucket_network_totals(
                 number_from_details(prev, "tx_bytes"),
                 number_from_details(next, "tx_bytes"),
             );
-            
+
             if rx_delta > 0.0 || tx_delta > 0.0 {
                 let bucket = bucket_start(next.ts, bucket_seconds);
                 buckets
@@ -1141,11 +1098,7 @@ fn network_totals_table(
     buckets: &BTreeMap<DateTime<Local>, TransferStats>,
 ) -> Table {
     let mut report = themed_table();
-    report.set_header(header_cells(&[
-        "Window",
-        "Total down",
-        "Total up",
-    ]));
+    report.set_header(header_cells(&["Window", "Total down", "Total up"]));
 
     for (key, stats) in buckets {
         report.add_row(vec![
@@ -1311,11 +1264,11 @@ mod tests {
 
         let totals = bucket_network_totals(&metrics, 60);
         assert!(!totals.is_empty());
-        
+
         // Sum up all totals across buckets
         let total_rx: f64 = totals.values().map(|s| s.rx_total).sum();
         let total_tx: f64 = totals.values().map(|s| s.tx_total).sum();
-        
+
         // Total RX: (3000-1000) + (7000-3000) = 2000 + 4000 = 6000
         assert!((total_rx - 6000.0).abs() < 1e-6);
         // Total TX: (1500-500) + (3000-1500) = 1000 + 1500 = 2500

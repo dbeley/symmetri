@@ -361,10 +361,13 @@ where
     series
 }
 
-fn network_bucket_series(metrics: &[MetricSample], timeframe: &Timeframe) -> (SeriesPoints, SeriesPoints) {
+fn network_bucket_series(
+    metrics: &[MetricSample],
+    timeframe: &Timeframe,
+) -> (SeriesPoints, SeriesPoints) {
     use crate::cli_helpers::{bucket_span_seconds, bucket_start};
     use chrono::Local;
-    
+
     let mut by_iface: BTreeMap<&str, Vec<&MetricSample>> = BTreeMap::new();
     for sample in metrics
         .iter()
@@ -377,7 +380,7 @@ fn network_bucket_series(metrics: &[MetricSample], timeframe: &Timeframe) -> (Se
     let mut all_deltas = Vec::new();
     for (_iface, mut samples) in by_iface {
         samples.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
-        
+
         for window in samples.windows(2) {
             let prev = window[0];
             let next = window[1];
@@ -385,7 +388,7 @@ fn network_bucket_series(metrics: &[MetricSample], timeframe: &Timeframe) -> (Se
             if dt <= 0.0 {
                 continue;
             }
-            
+
             let rx_delta = counter_delta(
                 detail_number(prev, "rx_bytes"),
                 detail_number(next, "rx_bytes"),
@@ -394,54 +397,60 @@ fn network_bucket_series(metrics: &[MetricSample], timeframe: &Timeframe) -> (Se
                 detail_number(prev, "tx_bytes"),
                 detail_number(next, "tx_bytes"),
             );
-            
+
             if rx_delta > 0.0 || tx_delta > 0.0 {
                 all_deltas.push((next.ts, rx_delta, tx_delta));
             }
         }
     }
-    
+
     // Determine data span for bucket size calculation
     let data_span = if let (Some(first), Some(last)) = (
-        all_deltas.iter().map(|(ts, _, _)| ts).min_by(|a, b| a.partial_cmp(b).unwrap()),
-        all_deltas.iter().map(|(ts, _, _)| ts).max_by(|a, b| a.partial_cmp(b).unwrap())
+        all_deltas
+            .iter()
+            .map(|(ts, _, _)| ts)
+            .min_by(|a, b| a.partial_cmp(b).unwrap()),
+        all_deltas
+            .iter()
+            .map(|(ts, _, _)| ts)
+            .max_by(|a, b| a.partial_cmp(b).unwrap()),
     ) {
         Some(last - first)
     } else {
         None
     };
-    
+
     let bucket_seconds = bucket_span_seconds(timeframe, data_span);
-    
+
     // Group deltas by time bucket and sum them
     let mut rx_buckets: BTreeMap<DateTime<Local>, f64> = BTreeMap::new();
     let mut tx_buckets: BTreeMap<DateTime<Local>, f64> = BTreeMap::new();
-    
+
     for (ts, rx_delta, tx_delta) in all_deltas {
         let bucket = bucket_start(ts, bucket_seconds);
         *rx_buckets.entry(bucket).or_insert(0.0) += rx_delta;
         *tx_buckets.entry(bucket).or_insert(0.0) += tx_delta;
     }
-    
+
     // Convert to series points
     let mut rx_series = Vec::new();
     let mut tx_series = Vec::new();
-    
+
     for (bucket, total) in rx_buckets {
         if let Some(utc_ts) = ts_to_datetime(bucket.timestamp() as f64) {
             rx_series.push((utc_ts, total / 1_048_576.0)); // Convert to MiB
         }
     }
-    
+
     for (bucket, total) in tx_buckets {
         if let Some(utc_ts) = ts_to_datetime(bucket.timestamp() as f64) {
             tx_series.push((utc_ts, total / 1_048_576.0)); // Convert to MiB
         }
     }
-    
+
     rx_series.sort_by_key(|(ts, _)| *ts);
     tx_series.sort_by_key(|(ts, _)| *ts);
-    
+
     (rx_series, tx_series)
 }
 
