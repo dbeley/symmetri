@@ -10,6 +10,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+/// Maximum reasonable power draw for typical consumer devices.
+/// Servers and workstations may exceed this limit legitimately.
+/// Values outside this range are likely sensor errors and will be filtered.
+const MAX_POWER_DRAW_WATTS: f64 = 500.0;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum MetricKind {
     CpuUsage,
@@ -484,7 +489,7 @@ fn power_samples(ts: f64) -> Vec<MetricSample> {
             let watts = raw_value / 1_000_000.0;
             // Sanity check: typical laptop/desktop power ranges from 0W to ~500W
             // Values outside this range are likely sensor errors and should be skipped
-            if watts < 0.0 || watts > 500.0 {
+            if watts < 0.0 || watts > MAX_POWER_DRAW_WATTS {
                 continue;
             }
             let source = format!("{name}:{}", fname.trim_end_matches("_input"));
