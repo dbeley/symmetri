@@ -14,7 +14,7 @@ use chrono::{DateTime, Local};
 use crate::aggregate::aggregate_samples_by_timestamp;
 use crate::cli_helpers::{
     average_rates, bucket_span_seconds, bucket_start, default_graph_path, estimate_runtime_hours,
-    format_runtime, is_charging, is_discharging,
+    format_runtime, is_charging, is_discharging, MAX_SAMPLE_GAP_HOURS,
 };
 use crate::collector::{collect_loop, collect_once, resolve_db_path};
 use crate::db::{self, Sample};
@@ -780,8 +780,6 @@ fn battery_rate_buckets(
     BTreeMap<DateTime<Local>, NumberStats>,
     BTreeMap<DateTime<Local>, NumberStats>,
 ) {
-    const MAX_GAP_HOURS: f64 = 5.0 / 60.0;
-
     let mut discharge = BTreeMap::new();
     let mut charge = BTreeMap::new();
     let mut iter = samples.iter();
@@ -801,7 +799,7 @@ fn battery_rate_buckets(
             continue;
         };
         let dt_hours = (current.ts - previous.ts) / 3600.0;
-        if dt_hours <= 0.0 || dt_hours > MAX_GAP_HOURS {
+        if dt_hours <= 0.0 || dt_hours > MAX_SAMPLE_GAP_HOURS {
             previous = current;
             continue;
         }

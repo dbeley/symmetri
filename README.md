@@ -74,6 +74,35 @@ Timeframe controls:
 - `--days N` overrides hours; `--months N` (~30 days each) overrides both
 - `--all` shows the full history
 
+### Report resolution and time buckets
+
+Symmetri automatically adjusts the time bucket size based on the reporting timeframe to balance detail and readability:
+
+| Timeframe | Bucket Size | Samples per Bucket* |
+|-----------|-------------|---------------------|
+| ≤ 2 hours | 5 minutes | 1 sample |
+| ≤ 6 hours | 10 minutes | 2 samples |
+| ≤ 1 day | 1 hour | 12 samples |
+| ≤ 3 days | 2 hours | 24 samples |
+| ≤ 7 days | 6 hours | 72 samples |
+| ≤ 30 days | 1 day | 288 samples |
+| ≤ 90 days | 3 days | 864 samples |
+| > 90 days | 7 days | 2016 samples |
+
+*Based on default 5-minute collection interval
+
+Each bucket aggregates metrics using:
+- **Battery percentage, health**: min, average, max
+- **Power draw**: average watts (from hwmon or battery energy delta)
+- **CPU/GPU/Temperature**: min, average, peak per source
+- **Memory/Disk**: min used, average used, min/avg/peak percentage
+- **Network**: total bytes transferred (download + upload)
+
+**Power calculation methodology:**
+- Battery discharge/charge rates: Computed as `(energy_now₂ - energy_now₁) / (time₂ - time₁)` between consecutive samples
+- Hardware monitor power: Instantaneous readings averaged over the bucket
+- Gaps > 5 minutes between samples are excluded to avoid skewing averages during system sleep/hibernate
+
 ## Development
 ```bash
 direnv allow                      # optional: auto-load dev shell (needs direnv + nix-direnv)

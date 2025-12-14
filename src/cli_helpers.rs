@@ -6,6 +6,12 @@ use chrono::{DateTime, Local, TimeZone};
 use crate::db::Sample;
 use crate::timeframe::Timeframe;
 
+/// Maximum time gap between samples to be considered part of the same session.
+/// Gaps larger than this are excluded from rate calculations to avoid skewing
+/// averages due to missing samples (e.g., system sleep/hibernate).
+/// This should be approximately 2x the typical collection interval.
+pub const MAX_SAMPLE_GAP_HOURS: f64 = 5.0 / 60.0; // 5 minutes
+
 fn sanitize_component(value: &str) -> Cow<'_, str> {
     if value
         .chars()
@@ -99,8 +105,6 @@ impl RateAccumulator {
 }
 
 pub fn average_rates<'a>(samples: impl IntoIterator<Item = &'a Sample>) -> AverageRates {
-    const MAX_GAP_HOURS: f64 = 5.0 / 60.0;
-
     let mut discharge = RateAccumulator::default();
     let mut charge = RateAccumulator::default();
     let mut iter = samples.into_iter().filter(|s| s.energy_now_wh.is_some());
@@ -115,7 +119,7 @@ pub fn average_rates<'a>(samples: impl IntoIterator<Item = &'a Sample>) -> Avera
             continue;
         }
         let dt_hours = (current.ts - previous.ts) / 3600.0;
-        if dt_hours > 0.0 && dt_hours <= MAX_GAP_HOURS {
+        if dt_hours > 0.0 && dt_hours <= MAX_SAMPLE_GAP_HOURS {
             let delta = current.energy_now_wh.unwrap() - previous.energy_now_wh.unwrap();
             if delta > 0.0 && is_charging(previous) && is_charging(current) {
                 charge.record(delta, dt_hours);

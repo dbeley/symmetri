@@ -482,6 +482,11 @@ fn power_samples(ts: f64) -> Vec<MetricSample> {
                 None => continue,
             };
             let watts = raw_value / 1_000_000.0;
+            // Sanity check: typical laptop/desktop power ranges from 0W to ~500W
+            // Values outside this range are likely sensor errors and should be skipped
+            if watts < 0.0 || watts > 500.0 {
+                continue;
+            }
             let source = format!("{name}:{}", fname.trim_end_matches("_input"));
             samples.push(MetricSample::new(
                 ts,
