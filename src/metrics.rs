@@ -10,9 +10,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// Maximum reasonable power draw for typical consumer devices.
-/// Servers and workstations may exceed this limit legitimately.
-/// Values outside this range are likely sensor errors and will be filtered.
+/// Maximum reasonable power draw for typical consumer devices (laptops, desktops).
+/// This constant is used to filter obvious sensor errors. Servers and high-end
+/// workstations may legitimately exceed this threshold; in such cases, consider
+/// removing this validation or configuring it based on your hardware profile.
+/// Values outside the range [0, MAX_POWER_DRAW_WATTS] are silently discarded.
 const MAX_POWER_DRAW_WATTS: f64 = 500.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]

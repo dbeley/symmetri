@@ -9,7 +9,10 @@ use crate::timeframe::Timeframe;
 /// Maximum time gap between samples to be considered part of the same session.
 /// Gaps larger than this are excluded from rate calculations to avoid skewing
 /// averages due to missing samples (e.g., system sleep/hibernate).
-/// This should be approximately 2x the typical collection interval.
+/// 
+/// This value (5 minutes) is approximately 2x the typical collection interval
+/// (default systemd timer runs every 5 minutes). If using a different collection
+/// interval, this threshold may need adjustment to match your sampling frequency.
 pub const MAX_SAMPLE_GAP_HOURS: f64 = 5.0 / 60.0; // 5 minutes
 
 fn sanitize_component(value: &str) -> Cow<'_, str> {

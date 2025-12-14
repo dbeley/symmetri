@@ -99,7 +99,7 @@ Each bucket aggregates metrics using:
 - **Network**: total bytes transferred (download + upload)
 
 **Power calculation methodology:**
-- Battery discharge/charge rates: Computed as `Power [W] = (energy_now₂ - energy_now₁) [Wh] / (time₂ - time₁) [h]` between consecutive samples
+- Battery discharge/charge rates: Computed as `Power [W] = (energy_now_current - energy_now_previous) [Wh] / (time_current - time_previous) [h]` between consecutive samples
 - Hardware monitor power: Instantaneous readings averaged over the bucket (values outside 0-500W range filtered as sensor errors)
 - Gaps > 5 minutes between samples are excluded to avoid skewing averages during system sleep/hibernate
 

@@ -15,15 +15,16 @@ This document provides a comprehensive analysis of the Symmetri system metrics i
 
 ### 1. Battery Power Calculation (cli_helpers.rs)
 
-**Current Implementation:**
+**Current Implementation (IMPROVED):**
 ```rust
-// Lines 101-133 in cli_helpers.rs
+// Consolidated constant from cli_helpers.rs
+pub const MAX_SAMPLE_GAP_HOURS: f64 = 5.0 / 60.0;  // 5 minutes
+
+// Now used consistently in both cli_helpers.rs and cli.rs
 pub fn average_rates<'a>(samples: impl IntoIterator<Item = &'a Sample>) -> AverageRates {
-    const MAX_GAP_HOURS: f64 = 5.0 / 60.0;  // 5 minutes
-    
     for current in iter {
         let dt_hours = (current.ts - previous.ts) / 3600.0;
-        if dt_hours > 0.0 && dt_hours <= MAX_GAP_HOURS {
+        if dt_hours > 0.0 && dt_hours <= MAX_SAMPLE_GAP_HOURS {
             let delta = current.energy_now_wh.unwrap() - previous.energy_now_wh.unwrap();
             if delta > 0.0 && is_charging(previous) && is_charging(current) {
                 charge.record(delta, dt_hours);
@@ -50,7 +51,8 @@ pub fn average_rates<'a>(samples: impl IntoIterator<Item = &'a Sample>) -> Avera
 - **Problem:** 5-minute gap is reasonable for default 5-minute collection, but won't adapt if collection interval changes
 - **Impact:** Could incorrectly exclude valid data or include stale data
 - **Severity:** MEDIUM
-- **Recommendation:** Make gap threshold configurable or derive from actual collection interval
+- **Status:** ✅ IMPROVED - Now documented that value is tuned for 5-minute collection interval
+- **Recommendation:** Make gap threshold configurable or derive from actual collection interval in future version
 
 ### 2. Hardware Monitor Power Draw (metrics.rs)
 
@@ -86,7 +88,8 @@ fn power_samples(ts: f64) -> Vec<MetricSample> {
 - **Problem:** No bounds checking on power readings (e.g., > 300W might be invalid for laptop)
 - **Impact:** Could store obviously incorrect values
 - **Severity:** LOW
-- **Recommendation:** Add optional sanity bounds based on device type
+- **Status:** ✅ FIXED - Added MAX_POWER_DRAW_WATTS constant (500W) with filtering
+- **Recommendation:** Users with high-power systems should be aware of this limit
 
 ### 3. Power Draw Aggregation in Reports (cli.rs)
 
@@ -147,7 +150,8 @@ pub fn bucket_span_seconds(timeframe: &Timeframe, data_span_seconds: Option<f64>
 - **Problem:** Users don't know what resolution they get
 - **Impact:** Could be surprising when detail is lost
 - **Severity:** LOW
-- **Recommendation:** Document in README or CLI help
+- **Status:** ✅ FIXED - Added comprehensive bucket resolution table to README
+- **Recommendation:** N/A - addressed
 
 ### 2. Bucket Alignment (cli_helpers.rs)
 
@@ -209,7 +213,8 @@ fn battery_rate_buckets(samples: &[Sample], bucket_seconds: i64) -> (...) {
 - **Problem:** Same constant defined in two places (cli_helpers.rs:102 and cli.rs:783)
 - **Impact:** Could diverge if changed in only one place
 - **Severity:** LOW
-- **Recommendation:** Define once in a common location
+- **Status:** ✅ FIXED - Consolidated to single MAX_SAMPLE_GAP_HOURS constant in cli_helpers.rs
+- **Recommendation:** N/A - addressed
 
 ### 2. Power Draw Bucketing (cli.rs)
 
@@ -338,37 +343,40 @@ let ts = SystemTime::now()
 
 ## Summary of Issues
 
-| Issue | Severity | Component | Impact |
-|-------|----------|-----------|--------|
-| #1 | LOW | Battery rates | Energy reading noise could skew averages |
-| #2 | MEDIUM | Battery rates | Hardcoded gap threshold not adaptive |
-| #3 | MEDIUM | Power sampling | Point-in-time sampling misses transients |
-| #4 | LOW | Power validation | No bounds checking on values |
-| #5 | N/A | Power aggregation | Not an issue - handled correctly |
-| #6 | LOW | Documentation | Bucket resolution not documented |
-| #7 | N/A | Bucket alignment | DST handled correctly |
-| #8 | LOW | Code quality | Duplicate constant definition |
-| #9 | LOW | Averaging | No weighted averaging (minor impact) |
-| #10 | NEGLIGIBLE | Network counters | Counter wrap not detected |
-| #11 | ENHANCEMENT | Collection | No adaptive sampling |
-| #12 | NEGLIGIBLE | Timestamps | Collection duration not accounted |
-| #13 | LOW | Time handling | Clock jumps not distinguished |
-| #14 | MEDIUM | Database | No data retention policy |
+| Issue | Severity | Component | Status | Impact |
+|-------|----------|-----------|--------|--------|
+| #1 | LOW | Battery rates | Open | Energy reading noise could skew averages |
+| #2 | MEDIUM | Battery rates | ✅ Improved | Documented for 5-minute interval |
+| #3 | MEDIUM | Power sampling | Open | Point-in-time sampling misses transients |
+| #4 | LOW | Power validation | ✅ Fixed | Now filters values outside 0-500W |
+| #5 | N/A | Power aggregation | N/A | Not an issue - handled correctly |
+| #6 | LOW | Documentation | ✅ Fixed | Added bucket resolution table |
+| #7 | N/A | Bucket alignment | N/A | DST handled correctly |
+| #8 | LOW | Code quality | ✅ Fixed | Consolidated constant definition |
+| #9 | LOW | Averaging | Open | No weighted averaging (minor impact) |
+| #10 | NEGLIGIBLE | Network counters | Open | Counter wrap not detected |
+| #11 | ENHANCEMENT | Collection | Open | No adaptive sampling |
+| #12 | NEGLIGIBLE | Timestamps | Open | Collection duration not accounted |
+| #13 | LOW | Time handling | Open | Clock jumps not distinguished |
+| #14 | MEDIUM | Database | Open | No data retention policy |
 
 ## Recommendations
 
-### High Priority:
-1. **Make gap threshold adaptive** (Issue #2)
-2. **Add data retention policy** (Issue #14)
-3. **Document bucket resolution behavior** (Issue #6)
+### Completed in This Review ✅:
+1. **Consolidate gap threshold constant** (Issue #8) - Single definition with documentation
+2. **Add power validation bounds** (Issue #4) - 0-500W range with configurable constant
+3. **Document bucket resolution behavior** (Issue #6) - Comprehensive table in README
+
+### High Priority (Future Work):
+1. **Add data retention policy** (Issue #14)
+2. **Make gap threshold fully adaptive** (Issue #2) - Consider deriving from actual interval
 
 ### Medium Priority:
-4. **Remove duplicate MAX_GAP_HOURS constant** (Issue #8)
-5. **Add optional sanity bounds for power values** (Issue #4)
+3. **Improve transient power capture** (Issue #3) - May require architectural changes
 
 ### Low Priority:
-6. **Consider monotonic timestamps** (Issue #13)
-7. **Improve transient power capture** (Issue #3) - may require architectural changes
+4. **Consider monotonic timestamps** (Issue #13)
+5. **Weighted averaging for uneven samples** (Issue #9)
 
 ## Conclusion
 
