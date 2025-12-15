@@ -16,3 +16,5 @@ __pycache__/
 # Local data and generated outputs
 *.db
 target
+
+/.cargo/config.toml

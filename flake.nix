@@ -18,7 +18,7 @@
             lockFile = ./Cargo.lock;
           };
           nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.fontconfig ];
+          buildInputs = [ pkgs.fontconfig pkgs.sqlite ];
         };
       in {
         packages.default = app;
@@ -34,6 +34,9 @@
             pkgs.gcc
             pkgs.pkg-config
             pkgs.fontconfig
+            pkgs.sqlite
+            pkgs.mold
+            pkgs.clang
             pkgs.prek
             pkgs.typos
             pkgs.hyperfine
