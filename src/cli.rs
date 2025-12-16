@@ -34,6 +34,7 @@ pub struct Cli {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum ReportPreset {
+    All,
     Battery,
     Cpu,
     Gpu,
@@ -112,6 +113,17 @@ fn normalize_presets(mut presets: Vec<ReportPreset>) -> Vec<ReportPreset> {
     if presets.is_empty() {
         return vec![ReportPreset::Battery];
     }
+    if presets.contains(&ReportPreset::All) {
+        return vec![
+            ReportPreset::Battery,
+            ReportPreset::Cpu,
+            ReportPreset::Gpu,
+            ReportPreset::Memory,
+            ReportPreset::Network,
+            ReportPreset::Temperature,
+            ReportPreset::Disk,
+        ];
+    }
     presets.sort();
     presets.dedup();
     presets
@@ -121,6 +133,19 @@ fn metric_kinds_for_presets(presets: &[ReportPreset]) -> Vec<MetricKind> {
     let mut kinds = Vec::new();
     for preset in presets {
         match preset {
+            ReportPreset::All => {
+                // All is expanded in normalize_presets, so this shouldn't happen
+                // but handle it just in case
+                kinds.push(MetricKind::PowerDraw);
+                kinds.push(MetricKind::CpuUsage);
+                kinds.push(MetricKind::CpuFrequency);
+                kinds.push(MetricKind::GpuUsage);
+                kinds.push(MetricKind::GpuFrequency);
+                kinds.push(MetricKind::MemoryUsage);
+                kinds.push(MetricKind::NetworkBytes);
+                kinds.push(MetricKind::Temperature);
+                kinds.push(MetricKind::DiskUsage);
+            }
             ReportPreset::Battery => kinds.push(MetricKind::PowerDraw),
             ReportPreset::Cpu => {
                 kinds.push(MetricKind::CpuUsage);
@@ -143,6 +168,10 @@ fn metric_kinds_for_presets(presets: &[ReportPreset]) -> Vec<MetricKind> {
 
 fn has_data_for_preset(preset: ReportPreset, samples: &[Sample], metrics: &[MetricSample]) -> bool {
     match preset {
+        ReportPreset::All => {
+            // All preset should always return true if any data exists
+            !samples.is_empty() || !metrics.is_empty()
+        }
         ReportPreset::Battery => {
             !samples.is_empty() || metrics.iter().any(|m| m.kind == MetricKind::PowerDraw)
         }
