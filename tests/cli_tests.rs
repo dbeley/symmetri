@@ -2,6 +2,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 #[test]
+#[allow(deprecated)]
 fn test_collect_help() {
     Command::cargo_bin("symmetri-collect")
         .unwrap()
@@ -12,6 +13,7 @@ fn test_collect_help() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_report_help() {
     Command::cargo_bin("symmetri-report")
         .unwrap()
@@ -22,6 +24,7 @@ fn test_report_help() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_main_binary_help() {
     Command::cargo_bin("symmetri")
         .unwrap()
@@ -32,6 +35,7 @@ fn test_main_binary_help() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_collect_subcommand() {
     Command::cargo_bin("symmetri")
         .unwrap()
@@ -43,6 +47,7 @@ fn test_collect_subcommand() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_report_subcommand() {
     Command::cargo_bin("symmetri")
         .unwrap()
