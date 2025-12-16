@@ -349,43 +349,92 @@ fn disk_samples(ts: f64) -> Vec<MetricSample> {
 }
 
 fn temperature_samples(ts: f64) -> Vec<MetricSample> {
-    let root = Path::new("/sys/class/thermal");
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(_) => return Vec::new(),
-    };
     let mut samples = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with("thermal_zone")
-        {
-            continue;
+
+    // Read from /sys/class/thermal
+    let thermal_root = Path::new("/sys/class/thermal");
+    if let Ok(entries) = fs::read_dir(thermal_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("thermal_zone")
+            {
+                continue;
+            }
+            let label = fs::read_to_string(path.join("type"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+            let temp_mc = match fs::read_to_string(path.join("temp"))
+                .ok()
+                .and_then(|s| s.trim().parse::<f64>().ok())
+            {
+                Some(v) => v,
+                None => continue,
+            };
+            let temp_c = temp_mc / 1000.0;
+            samples.push(MetricSample::new(
+                ts,
+                MetricKind::Temperature,
+                label,
+                Some(temp_c),
+                Some("C"),
+                Value::Null,
+            ));
         }
-        let label = fs::read_to_string(path.join("type"))
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
-        let temp_mc = match fs::read_to_string(path.join("temp"))
-            .ok()
-            .and_then(|s| s.trim().parse::<f64>().ok())
-        {
-            Some(v) => v,
-            None => continue,
-        };
-        let temp_c = temp_mc / 1000.0;
-        samples.push(MetricSample::new(
-            ts,
-            MetricKind::Temperature,
-            label,
-            Some(temp_c),
-            Some("C"),
-            Value::Null,
-        ));
     }
+
+    // Read from /sys/class/hwmon
+    let hwmon_root = Path::new("/sys/class/hwmon");
+    if let Ok(entries) = fs::read_dir(hwmon_root) {
+        for entry in entries.flatten() {
+            let hwmon_path = entry.path();
+            let name = fs::read_to_string(hwmon_path.join("name"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+            let sensor_entries = match fs::read_dir(&hwmon_path) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+            for sensor in sensor_entries.flatten() {
+                let fname = sensor.file_name().to_string_lossy().to_string();
+                if !fname.starts_with("temp") || !fname.ends_with("_input") {
+                    continue;
+                }
+                let temp_mc = match fs::read_to_string(sensor.path())
+                    .ok()
+                    .and_then(|s| s.trim().parse::<f64>().ok())
+                {
+                    Some(v) => v,
+                    None => continue,
+                };
+                let temp_c = temp_mc / 1000.0;
+
+                // Try to get a label for this sensor
+                let label_file = fname.replace("_input", "_label");
+                let label = fs::read_to_string(hwmon_path.join(&label_file))
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| fname.trim_end_matches("_input").to_string());
+
+                let source = format!("{name}:{label}");
+                samples.push(MetricSample::new(
+                    ts,
+                    MetricKind::Temperature,
+                    source,
+                    Some(temp_c),
+                    Some("C"),
+                    Value::Null,
+                ));
+            }
+        }
+    }
+
     samples
 }
 
