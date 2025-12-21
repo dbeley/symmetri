@@ -11,13 +11,11 @@ use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Tab
 
 use chrono::{DateTime, Local};
 
-use crate::aggregate::aggregate_samples_by_timestamp;
 use crate::cli_helpers::{
     average_rates, bucket_span_seconds, bucket_start, default_graph_path, estimate_runtime_hours,
-    format_runtime, is_charging, is_discharging,
-};
+    format_runtime, is_charging, is_discharging};
 use crate::collector::{collect_loop, collect_once, resolve_db_path};
-use crate::db::{self, Sample};
+use crate::db;
 use crate::graph;
 use crate::metrics::{MetricKind, MetricSample};
 use crate::timeframe::{build_timeframe, Timeframe};
@@ -166,15 +164,18 @@ fn metric_kinds_for_presets(presets: &[ReportPreset]) -> Vec<MetricKind> {
     kinds
 }
 
-fn has_data_for_preset(preset: ReportPreset, samples: &[Sample], metrics: &[MetricSample]) -> bool {
+fn has_data_for_preset(preset: ReportPreset, metrics: &[MetricSample]) -> bool {
     match preset {
-        ReportPreset::All => {
-            // All preset should always return true if any data exists
-            !samples.is_empty() || !metrics.is_empty()
-        }
-        ReportPreset::Battery => {
-            !samples.is_empty() || metrics.iter().any(|m| m.kind == MetricKind::PowerDraw)
-        }
+        ReportPreset::All => !metrics.is_empty(),
+        ReportPreset::Battery => metrics.iter().any(|m| {
+            matches!(
+                m.kind,
+                MetricKind::BatteryCharge
+                    | MetricKind::BatteryHealth
+                    | MetricKind::BatteryEnergy
+                    | MetricKind::PowerDraw
+            )
+        }),
         ReportPreset::Cpu => metrics
             .iter()
             .any(|m| matches!(m.kind, MetricKind::CpuUsage | MetricKind::CpuFrequency)),
@@ -228,28 +229,19 @@ where
             let presets = normalize_presets(presets);
             let metric_kinds = metric_kinds_for_presets(&presets);
 
-            let battery_total = db::count_samples(&resolved, None)?;
             let metric_total = db::count_metric_samples(&resolved, None)?;
-            if battery_total == 0 && metric_total == 0 {
+            if metric_total == 0 {
                 println!("No records available; collect data first.");
                 std::process::exit(1);
             }
 
             let since_ts = timeframe.since_timestamp(None);
-            let raw_samples =
-                if presets.contains(&ReportPreset::Battery) || graph_flag || graph_path.is_some() {
-                    db::fetch_samples(&resolved, since_ts)?
-                } else {
-                    Vec::new()
-                };
             let metric_samples =
                 db::fetch_metric_samples(&resolved, since_ts, Some(&metric_kinds))?;
             let metric_samples = filter_metrics_by_source(&metric_samples, &sensor_filters);
-            let timeframe_record_count = raw_samples.len();
-            let samples = aggregate_samples_by_timestamp(&raw_samples);
             let has_selected_data = presets
                 .iter()
-                .any(|preset| has_data_for_preset(*preset, &samples, &metric_samples));
+                .any(|preset| has_data_for_preset(*preset, &metric_samples));
             if !has_selected_data {
                 println!(
                     "No records for the selected presets in {}; try a broader timeframe or enable those collectors.",
@@ -269,16 +261,11 @@ where
             };
 
             if let Some(path) = output_path {
-                if samples.is_empty() && metric_samples.is_empty() {
+                if metric_samples.is_empty() {
                     println!("Skipping graph output; no data in timeframe.");
                 } else {
-                    let battery_for_plot: &[Sample] = if presets.contains(&ReportPreset::Battery) {
-                        &samples
-                    } else {
-                        &[]
-                    };
                     graph::render_plot(
-                        battery_for_plot,
+                        &metric_samples,
                         &metric_samples,
                         &presets,
                         &timeframe,

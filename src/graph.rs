@@ -15,12 +15,6 @@ use crate::db::{self, Sample};
 use crate::metrics::{MetricKind, MetricSample};
 use crate::timeframe::Timeframe;
 
-pub fn load_series(db_path: &Path, timeframe: &Timeframe) -> Result<Vec<Sample>> {
-    let since_ts = timeframe.since_timestamp(None);
-    let raw = db::fetch_samples(db_path, since_ts)?;
-    Ok(aggregate_samples_by_timestamp(&raw))
-}
-
 struct MetricSeries {
     label: String,
     points: Vec<(DateTime<Utc>, f64)>,

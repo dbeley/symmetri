@@ -3,11 +3,10 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use log::{info, warn};
+use log::info;
 
-use crate::db::{self, Sample};
+use crate::db;
 use crate::metrics;
-use crate::sysfs::{find_battery_paths, read_battery};
 
 pub fn default_db_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
@@ -32,45 +31,20 @@ pub fn resolve_db_path(db_path: Option<&Path>) -> PathBuf {
     default_db_path()
 }
 
-pub fn collect_once(db_path: Option<&Path>, sysfs_root: Option<&Path>) -> Result<i32> {
+pub fn collect_once(db_path: Option<&Path>, _sysfs_root: Option<&Path>) -> Result<i32> {
     let resolved_db = resolve_db_path(db_path);
     let mut conn = db::init_db_connection(&resolved_db)?;
-
-    let root = sysfs_root.unwrap_or_else(|| Path::new("/sys/class/power_supply"));
-    let battery_paths = find_battery_paths(root);
-    if battery_paths.is_empty() {
-        warn!("No batteries found in sysfs; collecting other metrics only");
-    }
 
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64();
 
-    let mut samples: Vec<Sample> = Vec::new();
-    for path in battery_paths {
-        let reading = read_battery(&path);
-        samples.push(db::create_sample_from_reading(&reading, Some(ts)));
-    }
-
     let metric_samples = metrics::collect_metrics(ts);
-    db::insert_all_samples(&mut conn, &samples, &metric_samples)?;
+    db::insert_metric_samples_with_conn(&mut conn, &metric_samples)?;
 
-    if !samples.is_empty() {
-        for sample in samples {
-            info!(
-                "Logged record for {}: percent={:.2} health={:.2}",
-                Path::new(&sample.source_path)
-                    .file_name()
-                    .map(|p| p.to_string_lossy())
-                    .unwrap_or_else(|| sample.source_path.clone().into()),
-                sample.percentage.unwrap_or(0.0),
-                sample.health_pct.unwrap_or(0.0)
-            );
-        }
-    }
     if !metric_samples.is_empty() {
-        info!("Logged {} system metric records", metric_samples.len());
+        info!("Logged {} metric records", metric_samples.len());
     }
     Ok(0)
 }

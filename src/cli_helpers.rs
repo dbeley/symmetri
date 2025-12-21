@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local, TimeZone};
 
-use crate::db::Sample;
+use crate::metrics::MetricSample;
 use crate::timeframe::Timeframe;
 
 fn sanitize_component(value: &str) -> Cow<'_, str> {
@@ -98,12 +98,14 @@ impl RateAccumulator {
     }
 }
 
-pub fn average_rates<'a>(samples: impl IntoIterator<Item = &'a Sample>) -> AverageRates {
+pub fn average_rates<'a>(samples: impl IntoIterator<Item = &'a MetricSample>) -> AverageRates {
     const MAX_GAP_HOURS: f64 = 5.0 / 60.0;
 
     let mut discharge = RateAccumulator::default();
     let mut charge = RateAccumulator::default();
-    let mut iter = samples.into_iter().filter(|s| s.energy_now_wh.is_some());
+    let mut iter = samples
+        .into_iter()
+        .filter(|s| number_from_details(s, "energy_now_wh").is_some());
     let mut previous = match iter.next() {
         Some(sample) => sample,
         None => return AverageRates::default(),
@@ -116,7 +118,9 @@ pub fn average_rates<'a>(samples: impl IntoIterator<Item = &'a Sample>) -> Avera
         }
         let dt_hours = (current.ts - previous.ts) / 3600.0;
         if dt_hours > 0.0 && dt_hours <= MAX_GAP_HOURS {
-            let delta = current.energy_now_wh.unwrap() - previous.energy_now_wh.unwrap();
+            let prev_energy = number_from_details(previous, "energy_now_wh").unwrap();
+            let curr_energy = number_from_details(current, "energy_now_wh").unwrap();
+            let delta = curr_energy - prev_energy;
             if delta > 0.0 && is_charging(previous) && is_charging(current) {
                 charge.record(delta, dt_hours);
             } else if delta < 0.0 && is_discharging(previous) && is_discharging(current) {
@@ -132,45 +136,26 @@ pub fn average_rates<'a>(samples: impl IntoIterator<Item = &'a Sample>) -> Avera
     }
 }
 
-pub(crate) fn is_discharging(sample: &Sample) -> bool {
-    sample
-        .status
+pub fn number_from_details(sample: &MetricSample, key: &str) -> Option<f64> {
+    sample.details.get(key)?.as_f64()
+}
+
+pub fn string_from_details(sample: &MetricSample, key: &str) -> Option<String> {
+    sample.details.get(key)?.as_str().map(String::from)
+}
+
+pub(crate) fn is_discharging(sample: &MetricSample) -> bool {
+    string_from_details(sample, "status")
         .as_deref()
         .map(|s| s.eq_ignore_ascii_case("discharging"))
         .unwrap_or(true)
 }
 
-pub(crate) fn is_charging(sample: &Sample) -> bool {
-    sample
-        .status
+pub(crate) fn is_charging(sample: &MetricSample) -> bool {
+    string_from_details(sample, "status")
         .as_deref()
         .map(|s| s.eq_ignore_ascii_case("charging"))
         .unwrap_or(false)
-}
-
-pub fn average_discharge_w(samples: &[Sample]) -> Option<f64> {
-    average_rates(samples).discharge_w
-}
-
-pub fn average_charge_w(samples: &[Sample]) -> Option<f64> {
-    average_rates(samples).charge_w
-}
-
-pub fn estimate_runtime_hours(
-    avg_discharge_w: Option<f64>,
-    current_sample: &Sample,
-) -> Option<f64> {
-    let avg = avg_discharge_w?;
-    if avg <= 0.0 {
-        return None;
-    }
-    let capacity_wh = current_sample
-        .energy_full_wh
-        .or(current_sample.energy_full_design_wh)?;
-    if capacity_wh <= 0.0 {
-        return None;
-    }
-    Some(capacity_wh / avg)
 }
 
 pub fn format_runtime(hours: Option<f64>) -> String {
@@ -189,25 +174,35 @@ pub fn format_runtime(hours: Option<f64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::MetricKind;
     use chrono::Timelike;
+    use serde_json::json;
 
-    fn sample(
+    fn battery_sample(
         ts: f64,
         energy_now: f64,
         energy_full: Option<f64>,
         energy_full_design: Option<f64>,
         status: Option<&str>,
-    ) -> Sample {
-        Sample {
+    ) -> MetricSample {
+        let mut details = serde_json::Map::new();
+        details.insert("energy_now_wh".to_string(), json!(energy_now));
+        if let Some(full) = energy_full {
+            details.insert("energy_full_wh".to_string(), json!(full));
+        }
+        if let Some(design) = energy_full_design {
+            details.insert("energy_full_design_wh".to_string(), json!(design));
+        }
+        if let Some(s) = status {
+            details.insert("status".to_string(), json!(s));
+        }
+        MetricSample {
             ts,
-            percentage: None,
-            capacity_pct: None,
-            health_pct: None,
-            energy_now_wh: Some(energy_now),
-            energy_full_wh: energy_full,
-            energy_full_design_wh: energy_full_design,
-            status: status.map(|s| s.to_string()),
-            source_path: "/dev/null".to_string(),
+            kind: MetricKind::BatteryEnergy,
+            source: "BAT0".to_string(),
+            value: Some(energy_now),
+            unit: Some("Wh".to_string()),
+            details: serde_json::Value::Object(details),
         }
     }
 
@@ -227,9 +222,9 @@ mod tests {
     #[test]
     fn average_discharge_and_runtime_estimates() {
         let samples = vec![
-            sample(0.0, 60.0, Some(60.0), Some(70.0), None),
-            sample(300.0, 59.6, Some(60.0), Some(70.0), None),
-            sample(600.0, 59.2, Some(60.0), Some(70.0), None),
+            battery_sample(0.0, 60.0, Some(60.0), Some(70.0), None),
+            battery_sample(300.0, 59.6, Some(60.0), Some(70.0), None),
+            battery_sample(600.0, 59.2, Some(60.0), Some(70.0), None),
         ];
         let avg = average_discharge_w(&samples).unwrap();
         let runtime_hours = estimate_runtime_hours(Some(avg), samples.last().unwrap()).unwrap();
@@ -237,7 +232,7 @@ mod tests {
         assert!((runtime_hours - 12.5).abs() < 0.01);
         assert_eq!(format_runtime(Some(runtime_hours)), "12h30m");
 
-        let design_sample = sample(3600.0, 55.0, None, Some(80.0), None);
+        let design_sample = battery_sample(3600.0, 55.0, None, Some(80.0), None);
         let design_runtime = estimate_runtime_hours(Some(avg), &design_sample).unwrap();
         assert!((design_runtime - 16.67).abs() < 0.02);
     }
@@ -245,9 +240,9 @@ mod tests {
     #[test]
     fn average_discharge_ignores_large_gaps() {
         let samples = vec![
-            sample(0.0, 60.0, Some(60.0), Some(70.0), None),
-            sample(300.0, 59.5, Some(60.0), Some(70.0), None),
-            sample(1800.0, 59.4, Some(60.0), Some(70.0), None),
+            battery_sample(0.0, 60.0, Some(60.0), Some(70.0), None),
+            battery_sample(300.0, 59.5, Some(60.0), Some(70.0), None),
+            battery_sample(1800.0, 59.4, Some(60.0), Some(70.0), None),
         ];
         let avg = average_discharge_w(&samples).unwrap();
         assert!((avg - 6.0).abs() < 0.01);
@@ -259,11 +254,11 @@ mod tests {
     #[test]
     fn average_discharge_ignores_charging_segments() {
         let samples = vec![
-            sample(0.0, 60.0, Some(60.0), Some(70.0), Some("Discharging")),
-            sample(300.0, 59.0, Some(60.0), Some(70.0), Some("Discharging")),
-            sample(600.0, 60.0, Some(60.0), Some(70.0), Some("Charging")),
-            sample(900.0, 59.5, Some(60.0), Some(70.0), Some("Discharging")),
-            sample(1200.0, 59.0, Some(60.0), Some(70.0), Some("Discharging")),
+            battery_sample(0.0, 60.0, Some(60.0), Some(70.0), Some("Discharging")),
+            battery_sample(300.0, 59.0, Some(60.0), Some(70.0), Some("Discharging")),
+            battery_sample(600.0, 60.0, Some(60.0), Some(70.0), Some("Charging")),
+            battery_sample(900.0, 59.5, Some(60.0), Some(70.0), Some("Discharging")),
+            battery_sample(1200.0, 59.0, Some(60.0), Some(70.0), Some("Discharging")),
         ];
         let avg = average_discharge_w(&samples).unwrap();
         assert!((avg - 9.0).abs() < 0.01);
@@ -272,12 +267,12 @@ mod tests {
     #[test]
     fn average_charge_tracks_charging_only() {
         let samples = vec![
-            sample(0.0, 50.0, Some(60.0), Some(70.0), Some("Charging")),
-            sample(300.0, 52.0, Some(60.0), Some(70.0), Some("Charging")),
-            sample(600.0, 52.5, Some(60.0), Some(70.0), Some("Charging")),
-            sample(900.0, 52.2, Some(60.0), Some(70.0), Some("Discharging")),
-            sample(1200.0, 53.0, Some(60.0), Some(70.0), Some("Charging")),
-            sample(1500.0, 54.5, Some(60.0), Some(70.0), Some("Charging")),
+            battery_sample(0.0, 50.0, Some(60.0), Some(70.0), Some("Charging")),
+            battery_sample(300.0, 52.0, Some(60.0), Some(70.0), Some("Charging")),
+            battery_sample(600.0, 52.5, Some(60.0), Some(70.0), Some("Charging")),
+            battery_sample(900.0, 52.2, Some(60.0), Some(70.0), Some("Discharging")),
+            battery_sample(1200.0, 53.0, Some(60.0), Some(70.0), Some("Charging")),
+            battery_sample(1500.0, 54.5, Some(60.0), Some(70.0), Some("Charging")),
         ];
         let avg = average_charge_w(&samples).unwrap();
         assert!((avg - 16.0).abs() < 0.01);
@@ -286,11 +281,11 @@ mod tests {
     #[test]
     fn average_rates_compute_charge_and_discharge_together() {
         let samples = vec![
-            sample(0.0, 50.0, Some(60.0), Some(70.0), Some("Charging")),
-            sample(300.0, 51.0, Some(60.0), Some(70.0), Some("Charging")),
-            sample(600.0, 52.0, Some(60.0), Some(70.0), Some("Charging")),
-            sample(900.0, 51.5, Some(60.0), Some(70.0), Some("Discharging")),
-            sample(1200.0, 51.0, Some(60.0), Some(70.0), Some("Discharging")),
+            battery_sample(0.0, 50.0, Some(60.0), Some(70.0), Some("Charging")),
+            battery_sample(300.0, 51.0, Some(60.0), Some(70.0), Some("Charging")),
+            battery_sample(600.0, 52.0, Some(60.0), Some(70.0), Some("Charging")),
+            battery_sample(900.0, 51.5, Some(60.0), Some(70.0), Some("Discharging")),
+            battery_sample(1200.0, 51.0, Some(60.0), Some(70.0), Some("Discharging")),
         ];
 
         let rates = average_rates(&samples);

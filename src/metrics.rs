@@ -21,6 +21,9 @@ pub enum MetricKind {
     DiskUsage,
     Temperature,
     PowerDraw,
+    BatteryCharge,
+    BatteryHealth,
+    BatteryEnergy,
 }
 
 impl MetricKind {
@@ -35,6 +38,9 @@ impl MetricKind {
             MetricKind::DiskUsage => "disk_usage",
             MetricKind::Temperature => "temperature",
             MetricKind::PowerDraw => "power_draw",
+            MetricKind::BatteryCharge => "battery_charge",
+            MetricKind::BatteryHealth => "battery_health",
+            MetricKind::BatteryEnergy => "battery_energy",
         }
     }
 
@@ -49,6 +55,9 @@ impl MetricKind {
             "disk_usage" => Some(MetricKind::DiskUsage),
             "temperature" => Some(MetricKind::Temperature),
             "power_draw" => Some(MetricKind::PowerDraw),
+            "battery_charge" => Some(MetricKind::BatteryCharge),
+            "battery_health" => Some(MetricKind::BatteryHealth),
+            "battery_energy" => Some(MetricKind::BatteryEnergy),
             _ => None,
         }
     }
@@ -545,6 +554,129 @@ fn power_samples(ts: f64) -> Vec<MetricSample> {
     samples
 }
 
+fn battery_samples(ts: f64) -> Vec<MetricSample> {
+    let root = Path::new("/sys/class/power_supply");
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    let mut samples = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        if !name.starts_with("BAT") {
+            continue;
+        }
+        let type_file = path.join("type");
+        let is_battery = fs::read_to_string(&type_file)
+            .ok()
+            .map(|s| s.trim().eq_ignore_ascii_case("battery"))
+            .unwrap_or(false);
+        if !is_battery {
+            continue;
+        }
+
+        let energy_now = read_numeric(&path.join("energy_now"))
+            .or_else(|| {
+                let charge = read_numeric(&path.join("charge_now"))?;
+                let voltage = read_numeric(&path.join("voltage_now"))
+                    .or_else(|| read_numeric(&path.join("voltage_min_design")))
+                    .or_else(|| read_numeric(&path.join("voltage_max_design")))?;
+                Some(charge * voltage / 1_000_000.0)
+            })
+            .map(|v| v / 1_000_000.0);
+
+        let energy_full = read_numeric(&path.join("energy_full"))
+            .or_else(|| {
+                let charge = read_numeric(&path.join("charge_full"))?;
+                let voltage = read_numeric(&path.join("voltage_now"))
+                    .or_else(|| read_numeric(&path.join("voltage_min_design")))
+                    .or_else(|| read_numeric(&path.join("voltage_max_design")))?;
+                Some(charge * voltage / 1_000_000.0)
+            })
+            .map(|v| v / 1_000_000.0);
+
+        let energy_full_design = read_numeric(&path.join("energy_full_design"))
+            .or_else(|| {
+                let charge = read_numeric(&path.join("charge_full_design"))?;
+                let voltage = read_numeric(&path.join("voltage_now"))
+                    .or_else(|| read_numeric(&path.join("voltage_min_design")))
+                    .or_else(|| read_numeric(&path.join("voltage_max_design")))?;
+                Some(charge * voltage / 1_000_000.0)
+            })
+            .map(|v| v / 1_000_000.0);
+
+        let capacity = read_numeric(&path.join("capacity"));
+        let status = fs::read_to_string(path.join("status"))
+            .ok()
+            .map(|s| s.trim().to_string());
+
+        let charge_pct = match (energy_now, energy_full) {
+            (Some(now), Some(full)) if full > 0.0 => Some((now / full) * 100.0),
+            _ => capacity,
+        };
+
+        let health_pct = match (energy_full, energy_full_design) {
+            (Some(full), Some(design)) if design > 0.0 => Some((full / design) * 100.0),
+            _ => None,
+        };
+
+        let mut details = serde_json::Map::new();
+        if let Some(s) = status {
+            details.insert("status".to_string(), json!(s));
+        }
+        if let Some(c) = capacity {
+            details.insert("capacity_pct".to_string(), json!(c));
+        }
+        if let Some(e) = energy_now {
+            details.insert("energy_now_wh".to_string(), json!(e));
+        }
+        if let Some(e) = energy_full {
+            details.insert("energy_full_wh".to_string(), json!(e));
+        }
+        if let Some(e) = energy_full_design {
+            details.insert("energy_full_design_wh".to_string(), json!(e));
+        }
+
+        if let Some(pct) = charge_pct {
+            samples.push(MetricSample::new(
+                ts,
+                MetricKind::BatteryCharge,
+                name.clone(),
+                Some(pct),
+                Some("%"),
+                Value::Object(details.clone()),
+            ));
+        }
+
+        if let Some(pct) = health_pct {
+            samples.push(MetricSample::new(
+                ts,
+                MetricKind::BatteryHealth,
+                name.clone(),
+                Some(pct),
+                Some("%"),
+                Value::Object(details.clone()),
+            ));
+        }
+
+        if let Some(wh) = energy_now {
+            samples.push(MetricSample::new(
+                ts,
+                MetricKind::BatteryEnergy,
+                name.clone(),
+                Some(wh),
+                Some("Wh"),
+                Value::Object(details),
+            ));
+        }
+    }
+    samples
+}
+
 pub fn collect_metrics(ts: f64) -> Vec<MetricSample> {
     let cpu_usage_handle = thread::spawn(move || cpu_usage_samples(ts));
 
@@ -556,6 +688,7 @@ pub fn collect_metrics(ts: f64) -> Vec<MetricSample> {
     metrics.extend(temperature_samples(ts));
     metrics.extend(gpu_samples(ts));
     metrics.extend(power_samples(ts));
+    metrics.extend(battery_samples(ts));
     if let Ok(cpu_samples) = cpu_usage_handle.join() {
         metrics.extend(cpu_samples);
     }
