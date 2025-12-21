@@ -1,7 +1,7 @@
-use std::collections::BTreeSet;
-use std::path::Path;
+use std::collections::BTreeMap;
 
-use crate::db::Sample;
+use crate::metrics::{MetricKind, MetricSample};
+use serde_json::json;
 
 fn sum_or_none(values: impl Iterator<Item = Option<f64>>) -> Option<f64> {
     let mut total = 0.0;
@@ -34,90 +34,156 @@ fn percent(numerator: Option<f64>, denominator: Option<f64>) -> Option<f64> {
     }
 }
 
-pub fn aggregate_group(samples: &[Sample]) -> anyhow::Result<Sample> {
-    if samples.is_empty() {
-        anyhow::bail!("Cannot aggregate an empty sample group");
-    }
-    let ts = samples[0].ts;
-
-    let energy_now_wh = sum_or_none(samples.iter().map(|s| s.energy_now_wh));
-    let energy_full_wh = sum_or_none(samples.iter().map(|s| s.energy_full_wh));
-    let energy_full_design_wh = sum_or_none(samples.iter().map(|s| s.energy_full_design_wh));
-    let capacity_pct = avg_or_none(samples.iter().map(|s| s.capacity_pct));
-
-    let mut percentage = percent(energy_now_wh, energy_full_wh);
-    if percentage.is_none() {
-        percentage = avg_or_none(samples.iter().map(|s| s.percentage));
-    }
-
-    let mut health_pct = percent(energy_full_wh, energy_full_design_wh);
-    if health_pct.is_none() {
-        health_pct = avg_or_none(samples.iter().map(|s| s.health_pct));
-    }
-
-    let mut statuses: BTreeSet<String> = BTreeSet::new();
-    for status in samples.iter().filter_map(|s| s.status.as_ref()) {
-        statuses.insert(status.to_string());
-    }
-    let status = if statuses.is_empty() {
-        None
-    } else if statuses.len() == 1 {
-        Some(statuses.into_iter().next().unwrap())
-    } else {
-        Some("mixed".to_string())
-    };
-
-    let mut sources: Vec<String> = samples
-        .iter()
-        .filter_map(|s| {
-            Path::new(&s.source_path)
-                .file_name()
-                .map(|p| p.to_string_lossy().into_owned())
-        })
-        .collect();
-    sources.sort();
-    sources.dedup();
-    let source_path = sources.join("+");
-
-    Ok(Sample {
-        ts,
-        percentage,
-        capacity_pct,
-        health_pct,
-        energy_now_wh,
-        energy_full_wh,
-        energy_full_design_wh,
-        status,
-        source_path,
-    })
-}
-
-pub fn aggregate_samples_by_timestamp(samples: &[Sample]) -> Vec<Sample> {
-    if samples.is_empty() {
+pub fn aggregate_battery_metrics(metrics: &[MetricSample]) -> Vec<MetricSample> {
+    if metrics.is_empty() {
         return Vec::new();
     }
 
-    let is_sorted = samples.windows(2).all(|pair| pair[0].ts <= pair[1].ts);
-    if !is_sorted {
-        let mut sorted = samples.to_vec();
-        sorted.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
-        return aggregate_samples_by_timestamp(&sorted);
+    let mut by_timestamp: BTreeMap<ordered_float::OrderedFloat<f64>, Vec<&MetricSample>> =
+        BTreeMap::new();
+    for metric in metrics {
+        by_timestamp
+            .entry(ordered_float::OrderedFloat(metric.ts))
+            .or_default()
+            .push(metric);
     }
 
-    aggregate_already_sorted(samples)
-}
-
-fn aggregate_already_sorted(samples: &[Sample]) -> Vec<Sample> {
     let mut aggregated = Vec::new();
-    let mut start = 0usize;
+    for (ts_key, group) in by_timestamp {
+        let ts = ts_key.0;
 
-    // Samples are expected to be pre-sorted by timestamp (the DB queries already order by ts).
-    for idx in 1..=samples.len() {
-        if idx == samples.len() || samples[idx].ts != samples[start].ts {
-            if let Ok(group) = aggregate_group(&samples[start..idx]) {
-                aggregated.push(group);
+        let energy_now: Vec<&MetricSample> = group
+            .iter()
+            .filter(|m| m.kind == MetricKind::BatteryEnergyNow)
+            .copied()
+            .collect();
+        let energy_full: Vec<&MetricSample> = group
+            .iter()
+            .filter(|m| m.kind == MetricKind::BatteryEnergyFull)
+            .copied()
+            .collect();
+        let energy_full_design: Vec<&MetricSample> = group
+            .iter()
+            .filter(|m| m.kind == MetricKind::BatteryEnergyFullDesign)
+            .copied()
+            .collect();
+        let percentages: Vec<&MetricSample> = group
+            .iter()
+            .filter(|m| m.kind == MetricKind::BatteryPercentage)
+            .copied()
+            .collect();
+        let capacity: Vec<&MetricSample> = group
+            .iter()
+            .filter(|m| m.kind == MetricKind::BatteryCapacity)
+            .copied()
+            .collect();
+        let health: Vec<&MetricSample> = group
+            .iter()
+            .filter(|m| m.kind == MetricKind::BatteryHealth)
+            .copied()
+            .collect();
+
+        let sum_energy_now = sum_or_none(energy_now.iter().map(|m| m.value));
+        let sum_energy_full = sum_or_none(energy_full.iter().map(|m| m.value));
+        let sum_energy_full_design = sum_or_none(energy_full_design.iter().map(|m| m.value));
+
+        let mut sources: Vec<&str> = group.iter().map(|m| m.source.as_str()).collect();
+        sources.sort();
+        sources.dedup();
+        let combined_source = sources.join("+");
+
+        let mut statuses = std::collections::BTreeSet::new();
+        for metric in &group {
+            if let Some(status) = metric.details.get("status").and_then(|v| v.as_str()) {
+                statuses.insert(status);
             }
-            start = idx;
+        }
+        let status = if statuses.is_empty() {
+            None
+        } else if statuses.len() == 1 {
+            Some(statuses.into_iter().next().unwrap().to_string())
+        } else {
+            Some("mixed".to_string())
+        };
+
+        let details = json!({ "status": status });
+
+        let mut computed_percentage = percent(sum_energy_now, sum_energy_full);
+        if computed_percentage.is_none() {
+            computed_percentage = avg_or_none(percentages.iter().map(|m| m.value));
+        }
+
+        let mut computed_health = percent(sum_energy_full, sum_energy_full_design);
+        if computed_health.is_none() {
+            computed_health = avg_or_none(health.iter().map(|m| m.value));
+        }
+
+        let avg_capacity = avg_or_none(capacity.iter().map(|m| m.value));
+
+        if let Some(pct) = computed_percentage {
+            aggregated.push(MetricSample::new(
+                ts,
+                MetricKind::BatteryPercentage,
+                &combined_source,
+                Some(pct),
+                Some("%"),
+                details.clone(),
+            ));
+        }
+
+        if let Some(cap) = avg_capacity {
+            aggregated.push(MetricSample::new(
+                ts,
+                MetricKind::BatteryCapacity,
+                &combined_source,
+                Some(cap),
+                Some("%"),
+                details.clone(),
+            ));
+        }
+
+        if let Some(h) = computed_health {
+            aggregated.push(MetricSample::new(
+                ts,
+                MetricKind::BatteryHealth,
+                &combined_source,
+                Some(h),
+                Some("%"),
+                details.clone(),
+            ));
+        }
+
+        if let Some(e) = sum_energy_now {
+            aggregated.push(MetricSample::new(
+                ts,
+                MetricKind::BatteryEnergyNow,
+                &combined_source,
+                Some(e),
+                Some("Wh"),
+                details.clone(),
+            ));
+        }
+
+        if let Some(e) = sum_energy_full {
+            aggregated.push(MetricSample::new(
+                ts,
+                MetricKind::BatteryEnergyFull,
+                &combined_source,
+                Some(e),
+                Some("Wh"),
+                details.clone(),
+            ));
+        }
+
+        if let Some(e) = sum_energy_full_design {
+            aggregated.push(MetricSample::new(
+                ts,
+                MetricKind::BatteryEnergyFullDesign,
+                &combined_source,
+                Some(e),
+                Some("Wh"),
+                details.clone(),
+            ));
         }
     }
 
@@ -127,62 +193,202 @@ fn aggregate_already_sorted(samples: &[Sample]) -> Vec<Sample> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    fn sample(
+    fn battery_metric(
         ts: f64,
-        energy_now: f64,
-        energy_full: f64,
-        energy_design: f64,
-        capacity: Option<f64>,
-        status: &str,
+        kind: MetricKind,
         source: &str,
-    ) -> Sample {
-        Sample {
+        value: f64,
+        status: &str,
+    ) -> MetricSample {
+        MetricSample {
             ts,
-            percentage: None,
-            capacity_pct: capacity,
-            health_pct: None,
-            energy_now_wh: Some(energy_now),
-            energy_full_wh: Some(energy_full),
-            energy_full_design_wh: Some(energy_design),
-            status: Some(status.to_string()),
-            source_path: source.to_string(),
+            kind: kind.clone(),
+            source: source.to_string(),
+            value: Some(value),
+            unit: match kind {
+                MetricKind::BatteryPercentage
+                | MetricKind::BatteryCapacity
+                | MetricKind::BatteryHealth => Some("%".to_string()),
+                _ => Some("Wh".to_string()),
+            },
+            details: json!({"status": status}),
         }
     }
 
     #[test]
-    fn aggregate_group_combines_values_and_statuses() {
-        let samples = vec![
-            sample(1.0, 10.0, 20.0, 25.0, Some(90.0), "Discharging", "BAT0"),
-            sample(1.0, 5.0, 10.0, 15.0, Some(95.0), "Charging", "BAT1"),
+    fn aggregate_battery_metrics_combines_multiple_batteries() {
+        let metrics = vec![
+            battery_metric(
+                1.0,
+                MetricKind::BatteryEnergyNow,
+                "BAT0",
+                10.0,
+                "Discharging",
+            ),
+            battery_metric(
+                1.0,
+                MetricKind::BatteryEnergyFull,
+                "BAT0",
+                20.0,
+                "Discharging",
+            ),
+            battery_metric(
+                1.0,
+                MetricKind::BatteryEnergyFullDesign,
+                "BAT0",
+                25.0,
+                "Discharging",
+            ),
+            battery_metric(
+                1.0,
+                MetricKind::BatteryCapacity,
+                "BAT0",
+                90.0,
+                "Discharging",
+            ),
+            battery_metric(1.0, MetricKind::BatteryEnergyNow, "BAT1", 5.0, "Charging"),
+            battery_metric(1.0, MetricKind::BatteryEnergyFull, "BAT1", 10.0, "Charging"),
+            battery_metric(
+                1.0,
+                MetricKind::BatteryEnergyFullDesign,
+                "BAT1",
+                15.0,
+                "Charging",
+            ),
+            battery_metric(1.0, MetricKind::BatteryCapacity, "BAT1", 95.0, "Charging"),
         ];
 
-        let combined = aggregate_group(&samples).unwrap();
+        let aggregated = aggregate_battery_metrics(&metrics);
 
-        assert_eq!(combined.energy_now_wh, Some(15.0));
-        assert_eq!(combined.energy_full_wh, Some(30.0));
-        assert_eq!(combined.energy_full_design_wh, Some(40.0));
-        assert!((combined.percentage.unwrap_or_default() - 50.0).abs() < 1e-6);
-        assert!((combined.health_pct.unwrap_or_default() - 75.0).abs() < 1e-6);
-        assert_eq!(combined.capacity_pct, Some(92.5));
-        assert_eq!(combined.status.as_deref(), Some("mixed"));
-        assert_eq!(combined.source_path, "BAT0+BAT1");
+        let energy_now = aggregated
+            .iter()
+            .find(|m| m.kind == MetricKind::BatteryEnergyNow)
+            .unwrap();
+        assert_eq!(energy_now.value, Some(15.0));
+        assert_eq!(energy_now.source, "BAT0+BAT1");
+
+        let energy_full = aggregated
+            .iter()
+            .find(|m| m.kind == MetricKind::BatteryEnergyFull)
+            .unwrap();
+        assert_eq!(energy_full.value, Some(30.0));
+
+        let energy_design = aggregated
+            .iter()
+            .find(|m| m.kind == MetricKind::BatteryEnergyFullDesign)
+            .unwrap();
+        assert_eq!(energy_design.value, Some(40.0));
+
+        let percentage = aggregated
+            .iter()
+            .find(|m| m.kind == MetricKind::BatteryPercentage)
+            .unwrap();
+        assert!((percentage.value.unwrap() - 50.0).abs() < 1e-6);
+
+        let health = aggregated
+            .iter()
+            .find(|m| m.kind == MetricKind::BatteryHealth)
+            .unwrap();
+        assert!((health.value.unwrap() - 75.0).abs() < 1e-6);
+
+        let capacity = aggregated
+            .iter()
+            .find(|m| m.kind == MetricKind::BatteryCapacity)
+            .unwrap();
+        assert_eq!(capacity.value, Some(92.5));
+
+        let status = percentage.details.get("status").unwrap().as_str();
+        assert_eq!(status, Some("mixed"));
     }
 
     #[test]
-    fn aggregate_samples_by_timestamp_groups_events() {
-        let samples = vec![
-            sample(1.0, 1.0, 2.0, 3.0, None, "Discharging", "BAT0"),
-            sample(2.0, 2.0, 4.0, 6.0, None, "Discharging", "BAT0"),
-            sample(1.0, 0.5, 1.0, 1.5, None, "Discharging", "BAT1"),
+    fn aggregate_battery_metrics_groups_by_timestamp() {
+        let metrics = vec![
+            battery_metric(
+                1.0,
+                MetricKind::BatteryEnergyNow,
+                "BAT0",
+                1.0,
+                "Discharging",
+            ),
+            battery_metric(
+                1.0,
+                MetricKind::BatteryEnergyFull,
+                "BAT0",
+                2.0,
+                "Discharging",
+            ),
+            battery_metric(
+                1.0,
+                MetricKind::BatteryEnergyFullDesign,
+                "BAT0",
+                3.0,
+                "Discharging",
+            ),
+            battery_metric(
+                2.0,
+                MetricKind::BatteryEnergyNow,
+                "BAT0",
+                2.0,
+                "Discharging",
+            ),
+            battery_metric(
+                2.0,
+                MetricKind::BatteryEnergyFull,
+                "BAT0",
+                4.0,
+                "Discharging",
+            ),
+            battery_metric(
+                2.0,
+                MetricKind::BatteryEnergyFullDesign,
+                "BAT0",
+                6.0,
+                "Discharging",
+            ),
+            battery_metric(
+                1.0,
+                MetricKind::BatteryEnergyNow,
+                "BAT1",
+                0.5,
+                "Discharging",
+            ),
+            battery_metric(
+                1.0,
+                MetricKind::BatteryEnergyFull,
+                "BAT1",
+                1.0,
+                "Discharging",
+            ),
+            battery_metric(
+                1.0,
+                MetricKind::BatteryEnergyFullDesign,
+                "BAT1",
+                1.5,
+                "Discharging",
+            ),
         ];
 
-        let aggregated = aggregate_samples_by_timestamp(&samples);
+        let aggregated = aggregate_battery_metrics(&metrics);
 
-        assert_eq!(aggregated.len(), 2);
-        assert_eq!(aggregated[0].ts, 1.0);
-        assert_eq!(aggregated[0].energy_now_wh, Some(1.5));
-        assert_eq!(aggregated[1].ts, 2.0);
-        assert_eq!(aggregated[1].energy_now_wh, Some(2.0));
+        let ts1_metrics: Vec<_> = aggregated.iter().filter(|m| m.ts == 1.0).collect();
+        let ts2_metrics: Vec<_> = aggregated.iter().filter(|m| m.ts == 2.0).collect();
+
+        assert!(ts1_metrics.len() >= 3);
+        assert!(ts2_metrics.len() >= 3);
+
+        let ts1_energy_now = ts1_metrics
+            .iter()
+            .find(|m| m.kind == MetricKind::BatteryEnergyNow)
+            .unwrap();
+        assert_eq!(ts1_energy_now.value, Some(1.5));
+
+        let ts2_energy_now = ts2_metrics
+            .iter()
+            .find(|m| m.kind == MetricKind::BatteryEnergyNow)
+            .unwrap();
+        assert_eq!(ts2_energy_now.value, Some(2.0));
     }
 }

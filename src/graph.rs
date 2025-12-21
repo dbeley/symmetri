@@ -9,16 +9,24 @@ use plotters::coord::Shift;
 use plotters::prelude::*;
 use plotters::series::LineSeries;
 
-use crate::aggregate::aggregate_samples_by_timestamp;
+use crate::aggregate::aggregate_battery_metrics;
 use crate::cli::ReportPreset;
-use crate::db::{self, Sample};
+use crate::db;
 use crate::metrics::{MetricKind, MetricSample};
 use crate::timeframe::Timeframe;
 
-pub fn load_series(db_path: &Path, timeframe: &Timeframe) -> Result<Vec<Sample>> {
+pub fn load_battery_series(db_path: &Path, timeframe: &Timeframe) -> Result<Vec<MetricSample>> {
     let since_ts = timeframe.since_timestamp(None);
-    let raw = db::fetch_samples(db_path, since_ts)?;
-    Ok(aggregate_samples_by_timestamp(&raw))
+    let battery_kinds = [
+        MetricKind::BatteryPercentage,
+        MetricKind::BatteryCapacity,
+        MetricKind::BatteryHealth,
+        MetricKind::BatteryEnergyNow,
+        MetricKind::BatteryEnergyFull,
+        MetricKind::BatteryEnergyFullDesign,
+    ];
+    let raw = db::fetch_metric_samples(db_path, since_ts, Some(&battery_kinds))?;
+    Ok(aggregate_battery_metrics(&raw))
 }
 
 struct MetricSeries {
@@ -35,13 +43,13 @@ struct ChartSpec {
 }
 
 pub fn render_plot(
-    battery_samples: &[Sample],
+    battery_metrics: &[MetricSample],
     metrics: &[MetricSample],
     presets: &[ReportPreset],
     timeframe: &Timeframe,
     output: &Path,
 ) -> Result<()> {
-    let charts = build_charts(battery_samples, metrics, presets, timeframe);
+    let charts = build_charts(battery_metrics, metrics, presets, timeframe);
     if charts.is_empty() {
         warn!("No values available to plot for selected presets");
         return Ok(());
@@ -63,7 +71,7 @@ pub fn render_plot(
 }
 
 fn build_charts(
-    battery_samples: &[Sample],
+    battery_metrics: &[MetricSample],
     metrics: &[MetricSample],
     presets: &[ReportPreset],
     timeframe: &Timeframe,
@@ -73,14 +81,14 @@ fn build_charts(
 
     if presets.contains(&ReportPreset::Battery) {
         let mut series = Vec::new();
-        let percent_points = battery_series(battery_samples, |s| s.percentage);
+        let percent_points = metric_series(battery_metrics, MetricKind::BatteryPercentage);
         if !percent_points.is_empty() {
             series.push(MetricSeries {
                 label: "Charge %".to_string(),
                 points: percent_points,
             });
         }
-        let health_points = battery_series(battery_samples, |s| s.health_pct);
+        let health_points = metric_series(battery_metrics, MetricKind::BatteryHealth);
         if !health_points.is_empty() {
             series.push(MetricSeries {
                 label: "Health %".to_string(),
@@ -275,15 +283,13 @@ fn plot_chart(area: DrawingArea<BitMapBackend, Shift>, chart: &ChartSpec) -> Res
     Ok(())
 }
 
-fn battery_series<F>(samples: &[Sample], mut getter: F) -> Vec<(DateTime<Utc>, f64)>
-where
-    F: FnMut(&Sample) -> Option<f64>,
-{
-    samples
+fn metric_series(metrics: &[MetricSample], kind: MetricKind) -> Vec<(DateTime<Utc>, f64)> {
+    metrics
         .iter()
-        .filter_map(|sample| {
-            let ts = ts_to_datetime(sample.ts)?;
-            let value = getter(sample)?;
+        .filter(|m| m.kind == kind)
+        .filter_map(|metric| {
+            let ts = ts_to_datetime(metric.ts)?;
+            let value = metric.value?;
             Some((ts, value))
         })
         .collect()
