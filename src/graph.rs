@@ -9,25 +9,9 @@ use plotters::coord::Shift;
 use plotters::prelude::*;
 use plotters::series::LineSeries;
 
-use crate::aggregate::aggregate_battery_metrics;
 use crate::cli::ReportPreset;
-use crate::db;
 use crate::metrics::{MetricKind, MetricSample};
 use crate::timeframe::Timeframe;
-
-pub fn load_battery_series(db_path: &Path, timeframe: &Timeframe) -> Result<Vec<MetricSample>> {
-    let since_ts = timeframe.since_timestamp(None);
-    let battery_kinds = [
-        MetricKind::BatteryPercentage,
-        MetricKind::BatteryCapacity,
-        MetricKind::BatteryHealth,
-        MetricKind::BatteryEnergyNow,
-        MetricKind::BatteryEnergyFull,
-        MetricKind::BatteryEnergyFullDesign,
-    ];
-    let raw = db::fetch_metric_samples(db_path, since_ts, Some(&battery_kinds))?;
-    Ok(aggregate_battery_metrics(&raw))
-}
 
 struct MetricSeries {
     label: String,
@@ -43,13 +27,12 @@ struct ChartSpec {
 }
 
 pub fn render_plot(
-    battery_metrics: &[MetricSample],
     metrics: &[MetricSample],
     presets: &[ReportPreset],
     timeframe: &Timeframe,
     output: &Path,
 ) -> Result<()> {
-    let charts = build_charts(battery_metrics, metrics, presets, timeframe);
+    let charts = build_charts(metrics, presets, timeframe);
     if charts.is_empty() {
         warn!("No values available to plot for selected presets");
         return Ok(());
@@ -71,7 +54,6 @@ pub fn render_plot(
 }
 
 fn build_charts(
-    battery_metrics: &[MetricSample],
     metrics: &[MetricSample],
     presets: &[ReportPreset],
     timeframe: &Timeframe,
@@ -81,14 +63,14 @@ fn build_charts(
 
     if presets.contains(&ReportPreset::Battery) {
         let mut series = Vec::new();
-        let percent_points = metric_series(battery_metrics, MetricKind::BatteryPercentage);
+        let percent_points = metric_series(metrics, MetricKind::BatteryPercentage);
         if !percent_points.is_empty() {
             series.push(MetricSeries {
                 label: "Charge %".to_string(),
                 points: percent_points,
             });
         }
-        let health_points = metric_series(battery_metrics, MetricKind::BatteryHealth);
+        let health_points = metric_series(metrics, MetricKind::BatteryHealth);
         if !health_points.is_empty() {
             series.push(MetricSeries {
                 label: "Health %".to_string(),

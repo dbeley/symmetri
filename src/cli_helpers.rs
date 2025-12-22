@@ -176,11 +176,13 @@ pub fn estimate_runtime_hours(
     }
     let capacity_wh = battery_metrics
         .iter()
-        .filter(|m| {
-            m.kind == MetricKind::BatteryEnergyFull || m.kind == MetricKind::BatteryEnergyFullDesign
+        .find(|m| m.kind == MetricKind::BatteryEnergyFull && m.value.is_some())
+        .or_else(|| {
+            battery_metrics
+                .iter()
+                .find(|m| m.kind == MetricKind::BatteryEnergyFullDesign && m.value.is_some())
         })
-        .filter_map(|m| m.value)
-        .max_by(|a, b| a.partial_cmp(b).unwrap())?;
+        .and_then(|m| m.value)?;
     if capacity_wh <= 0.0 {
         return None;
     }

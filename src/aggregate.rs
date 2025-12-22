@@ -34,9 +34,24 @@ fn percent(numerator: Option<f64>, denominator: Option<f64>) -> Option<f64> {
     }
 }
 
-pub fn aggregate_battery_metrics(metrics: &[MetricSample]) -> Vec<MetricSample> {
+pub fn aggregate_multi_device_metrics(metrics: &[MetricSample]) -> Vec<MetricSample> {
     if metrics.is_empty() {
         return Vec::new();
+    }
+
+    let battery_kinds = [
+        MetricKind::BatteryPercentage,
+        MetricKind::BatteryCapacity,
+        MetricKind::BatteryHealth,
+        MetricKind::BatteryEnergyNow,
+        MetricKind::BatteryEnergyFull,
+        MetricKind::BatteryEnergyFullDesign,
+    ];
+
+    let needs_aggregation = metrics.iter().any(|m| battery_kinds.contains(&m.kind));
+
+    if !needs_aggregation {
+        return metrics.to_vec();
     }
 
     let mut by_timestamp: BTreeMap<ordered_float::OrderedFloat<f64>, Vec<&MetricSample>> =
@@ -51,6 +66,12 @@ pub fn aggregate_battery_metrics(metrics: &[MetricSample]) -> Vec<MetricSample> 
     let mut aggregated = Vec::new();
     for (ts_key, group) in by_timestamp {
         let ts = ts_key.0;
+
+        for metric in &group {
+            if !battery_kinds.contains(&metric.kind) {
+                aggregated.push((*metric).clone());
+            }
+        }
 
         let energy_now: Vec<&MetricSample> = group
             .iter()
@@ -218,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_battery_metrics_combines_multiple_batteries() {
+    fn aggregate_multi_device_metrics_combines_multiple_batteries() {
         let metrics = vec![
             battery_metric(
                 1.0,
@@ -260,7 +281,7 @@ mod tests {
             battery_metric(1.0, MetricKind::BatteryCapacity, "BAT1", 95.0, "Charging"),
         ];
 
-        let aggregated = aggregate_battery_metrics(&metrics);
+        let aggregated = aggregate_multi_device_metrics(&metrics);
 
         let energy_now = aggregated
             .iter()
@@ -304,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_battery_metrics_groups_by_timestamp() {
+    fn aggregate_multi_device_metrics_groups_by_timestamp() {
         let metrics = vec![
             battery_metric(
                 1.0,
@@ -371,7 +392,7 @@ mod tests {
             ),
         ];
 
-        let aggregated = aggregate_battery_metrics(&metrics);
+        let aggregated = aggregate_multi_device_metrics(&metrics);
 
         let ts1_metrics: Vec<_> = aggregated.iter().filter(|m| m.ts == 1.0).collect();
         let ts2_metrics: Vec<_> = aggregated.iter().filter(|m| m.ts == 2.0).collect();
