@@ -2,6 +2,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::metrics::{MetricKind, MetricSample};
+use serde_json::json;
+
 #[derive(Debug, Clone)]
 pub struct BatteryReading {
     pub path: PathBuf,
@@ -12,6 +15,87 @@ pub struct BatteryReading {
     pub energy_full_design_wh: Option<f64>,
     pub health_pct: Option<f64>,
     pub status: Option<String>,
+}
+
+pub fn create_battery_metrics(reading: &BatteryReading, ts: f64) -> Vec<MetricSample> {
+    let source = reading
+        .path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| reading.path.to_string_lossy().to_string());
+
+    let mut metrics = Vec::new();
+    let details = json!({
+        "status": reading.status
+    });
+
+    if let Some(percentage) = reading.percentage {
+        metrics.push(MetricSample::new(
+            ts,
+            MetricKind::BatteryPercentage,
+            &source,
+            Some(percentage),
+            Some("%"),
+            details.clone(),
+        ));
+    }
+
+    if let Some(capacity) = reading.capacity_pct {
+        metrics.push(MetricSample::new(
+            ts,
+            MetricKind::BatteryCapacity,
+            &source,
+            Some(capacity),
+            Some("%"),
+            details.clone(),
+        ));
+    }
+
+    if let Some(health) = reading.health_pct {
+        metrics.push(MetricSample::new(
+            ts,
+            MetricKind::BatteryHealth,
+            &source,
+            Some(health),
+            Some("%"),
+            details.clone(),
+        ));
+    }
+
+    if let Some(energy) = reading.energy_now_wh {
+        metrics.push(MetricSample::new(
+            ts,
+            MetricKind::BatteryEnergyNow,
+            &source,
+            Some(energy),
+            Some("Wh"),
+            details.clone(),
+        ));
+    }
+
+    if let Some(energy) = reading.energy_full_wh {
+        metrics.push(MetricSample::new(
+            ts,
+            MetricKind::BatteryEnergyFull,
+            &source,
+            Some(energy),
+            Some("Wh"),
+            details.clone(),
+        ));
+    }
+
+    if let Some(energy) = reading.energy_full_design_wh {
+        metrics.push(MetricSample::new(
+            ts,
+            MetricKind::BatteryEnergyFullDesign,
+            &source,
+            Some(energy),
+            Some("Wh"),
+            details.clone(),
+        ));
+    }
+
+    metrics
 }
 
 fn parse_uevent(path: &Path) -> HashMap<String, String> {
