@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS samples (
     energy_full_wh REAL,
     energy_full_design_wh REAL,
     status TEXT,
-    source_path TEXT
+    source_path TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples (ts);
 CREATE TABLE IF NOT EXISTS metric_samples (
@@ -53,6 +53,11 @@ pub fn init_db_connection(db_path: &Path) -> Result<Connection> {
     }
     let conn = Connection::open(db_path)?;
     conn.execute_batch(SCHEMA)?;
+    // Migration: update NULL source_path values to empty string
+    conn.execute(
+        "UPDATE samples SET source_path = '' WHERE source_path IS NULL",
+        [],
+    )?;
     Ok(conn)
 }
 
@@ -254,9 +259,7 @@ fn sample_from_row(row: &Row) -> rusqlite::Result<Sample> {
         energy_full_wh: row.get("energy_full_wh")?,
         energy_full_design_wh: row.get("energy_full_design_wh")?,
         status: row.get("status")?,
-        source_path: row
-            .get::<_, Option<String>>("source_path")?
-            .unwrap_or_default(),
+        source_path: row.get("source_path").unwrap_or_else(|_| String::new()),
     })
 }
 
