@@ -1,10 +1,12 @@
 # Symmetri
 
-Symmetri is a fast Rust collector + report/graph CLI for Linux (tested on NixOS). It tracks batteries plus broader system metrics and stores everything in SQLite for quick summaries over configurable hour/day/month windows (default: last 6 hours) or all history.
+Symmetri is a fast Rust system metric collector for Linux (tested on NixOS). It tracks a handful of system metrics including batteries, temperature and network usage and stores everything in SQLite.
+
+To display the collected metrics, it also features a powerful reporting function with graphing capabilities over configurable timeframes.
 
 ## Features
 - Batteries: energy/percentage/health from `/sys/class/power_supply`
-- CPU/GPU: usage %, current frequencies (best-effort per device)
+- CPU/GPU: usage %, current frequencies
 - Network: rx/tx byte counters per interface
 - Memory/disk: used/available bytes
 - Thermal + power: thermal zone temperatures, hwmon power draw where exposed
