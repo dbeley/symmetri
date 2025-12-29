@@ -1,6 +1,6 @@
 [package]
 name = "symmetri"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 license = "MIT"
 description = "System metrics collection (battery, CPU, GPU, network, RAM, disks, thermals) for Linux/NixOS"

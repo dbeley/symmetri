@@ -8,10 +8,11 @@ use rusqlite::{params, Connection, Row};
 use crate::metrics::{MetricKind, MetricSample};
 
 const SCHEMA: &str = r#"
+
 CREATE TABLE IF NOT EXISTS metric_samples (
     ts REAL NOT NULL,
     kind TEXT NOT NULL,
-    source TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
     value REAL,
     unit TEXT,
     details TEXT
@@ -26,6 +27,11 @@ pub fn init_db_connection(db_path: &Path) -> Result<Connection> {
     }
     let conn = Connection::open(db_path)?;
     conn.execute_batch(SCHEMA)?;
+    // Migration: update NULL source_path values to empty string
+    conn.execute(
+        "UPDATE samples SET source_path = '' WHERE source_path IS NULL",
+        [],
+    )?;
     Ok(conn)
 }
 
