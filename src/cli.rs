@@ -11,13 +11,12 @@ use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Tab
 
 use chrono::{DateTime, Local};
 
-use crate::aggregate::aggregate_samples_by_timestamp;
 use crate::cli_helpers::{
     average_rates, bucket_span_seconds, bucket_start, default_graph_path, estimate_runtime_hours,
     format_runtime, is_charging, is_discharging,
 };
 use crate::collector::{collect_loop, collect_once, resolve_db_path};
-use crate::db::{self, Sample};
+use crate::db;
 use crate::graph;
 use crate::metrics::{MetricKind, MetricSample};
 use crate::timeframe::{build_timeframe, Timeframe};
@@ -134,8 +133,12 @@ fn metric_kinds_for_presets(presets: &[ReportPreset]) -> Vec<MetricKind> {
     for preset in presets {
         match preset {
             ReportPreset::All => {
-                // All is expanded in normalize_presets, so this shouldn't happen
-                // but handle it just in case
+                kinds.push(MetricKind::BatteryPercentage);
+                kinds.push(MetricKind::BatteryCapacity);
+                kinds.push(MetricKind::BatteryHealth);
+                kinds.push(MetricKind::BatteryEnergyNow);
+                kinds.push(MetricKind::BatteryEnergyFull);
+                kinds.push(MetricKind::BatteryEnergyFullDesign);
                 kinds.push(MetricKind::PowerDraw);
                 kinds.push(MetricKind::CpuUsage);
                 kinds.push(MetricKind::CpuFrequency);
@@ -146,7 +149,15 @@ fn metric_kinds_for_presets(presets: &[ReportPreset]) -> Vec<MetricKind> {
                 kinds.push(MetricKind::Temperature);
                 kinds.push(MetricKind::DiskUsage);
             }
-            ReportPreset::Battery => kinds.push(MetricKind::PowerDraw),
+            ReportPreset::Battery => {
+                kinds.push(MetricKind::BatteryPercentage);
+                kinds.push(MetricKind::BatteryCapacity);
+                kinds.push(MetricKind::BatteryHealth);
+                kinds.push(MetricKind::BatteryEnergyNow);
+                kinds.push(MetricKind::BatteryEnergyFull);
+                kinds.push(MetricKind::BatteryEnergyFullDesign);
+                kinds.push(MetricKind::PowerDraw);
+            }
             ReportPreset::Cpu => {
                 kinds.push(MetricKind::CpuUsage);
                 kinds.push(MetricKind::CpuFrequency);
@@ -166,15 +177,21 @@ fn metric_kinds_for_presets(presets: &[ReportPreset]) -> Vec<MetricKind> {
     kinds
 }
 
-fn has_data_for_preset(preset: ReportPreset, samples: &[Sample], metrics: &[MetricSample]) -> bool {
+fn has_data_for_preset(preset: ReportPreset, metrics: &[MetricSample]) -> bool {
     match preset {
-        ReportPreset::All => {
-            // All preset should always return true if any data exists
-            !samples.is_empty() || !metrics.is_empty()
-        }
-        ReportPreset::Battery => {
-            !samples.is_empty() || metrics.iter().any(|m| m.kind == MetricKind::PowerDraw)
-        }
+        ReportPreset::All => !metrics.is_empty(),
+        ReportPreset::Battery => metrics.iter().any(|m| {
+            matches!(
+                m.kind,
+                MetricKind::BatteryPercentage
+                    | MetricKind::BatteryCapacity
+                    | MetricKind::BatteryHealth
+                    | MetricKind::BatteryEnergyNow
+                    | MetricKind::BatteryEnergyFull
+                    | MetricKind::BatteryEnergyFullDesign
+                    | MetricKind::PowerDraw
+            )
+        }),
         ReportPreset::Cpu => metrics
             .iter()
             .any(|m| matches!(m.kind, MetricKind::CpuUsage | MetricKind::CpuFrequency)),
@@ -228,28 +245,22 @@ where
             let presets = normalize_presets(presets);
             let metric_kinds = metric_kinds_for_presets(&presets);
 
-            let battery_total = db::count_samples(&resolved, None)?;
             let metric_total = db::count_metric_samples(&resolved, None)?;
-            if battery_total == 0 && metric_total == 0 {
+            if metric_total == 0 {
                 println!("No records available; collect data first.");
                 std::process::exit(1);
             }
 
             let since_ts = timeframe.since_timestamp(None);
-            let raw_samples =
-                if presets.contains(&ReportPreset::Battery) || graph_flag || graph_path.is_some() {
-                    db::fetch_samples(&resolved, since_ts)?
-                } else {
-                    Vec::new()
-                };
-            let metric_samples =
-                db::fetch_metric_samples(&resolved, since_ts, Some(&metric_kinds))?;
-            let metric_samples = filter_metrics_by_source(&metric_samples, &sensor_filters);
-            let timeframe_record_count = raw_samples.len();
-            let samples = aggregate_samples_by_timestamp(&raw_samples);
+            let raw_metrics = db::fetch_metric_samples(&resolved, since_ts, Some(&metric_kinds))?;
+
+            let aggregated_metrics = crate::aggregate::aggregate_multi_device_metrics(&raw_metrics);
+            let metric_samples = filter_metrics_by_source(&aggregated_metrics, &sensor_filters);
+            let timeframe_record_count = raw_metrics.len();
+
             let has_selected_data = presets
                 .iter()
-                .any(|preset| has_data_for_preset(*preset, &samples, &metric_samples));
+                .any(|preset| has_data_for_preset(*preset, &metric_samples));
             if !has_selected_data {
                 println!(
                     "No records for the selected presets in {}; try a broader timeframe or enable those collectors.",
@@ -269,29 +280,17 @@ where
             };
 
             if let Some(path) = output_path {
-                if samples.is_empty() && metric_samples.is_empty() {
+                if metric_samples.is_empty() {
                     println!("Skipping graph output; no data in timeframe.");
                 } else {
-                    let battery_for_plot: &[Sample] = if presets.contains(&ReportPreset::Battery) {
-                        &samples
-                    } else {
-                        &[]
-                    };
-                    graph::render_plot(
-                        battery_for_plot,
-                        &metric_samples,
-                        &presets,
-                        &timeframe,
-                        &path,
-                    )?;
+                    graph::render_plot(&metric_samples, &presets, &timeframe, &path)?;
                 }
             }
 
             summarize(
-                &samples,
+                &metric_samples,
                 &timeframe,
                 timeframe_record_count,
-                &metric_samples,
                 &presets,
             );
         }
@@ -300,21 +299,34 @@ where
 }
 
 fn summarize(
-    timeframe_samples: &[Sample],
+    metrics: &[MetricSample],
     timeframe: &Timeframe,
     timeframe_records: usize,
-    metrics: &[MetricSample],
     presets: &[ReportPreset],
 ) {
     let timeframe_label = timeframe.label.replace('_', " ");
-    let bucket_seconds =
-        bucket_span_seconds(timeframe, data_span_seconds(timeframe_samples, metrics));
-    let battery_rates = average_rates(timeframe_samples);
+    let bucket_seconds = bucket_span_seconds(timeframe, data_span_seconds(metrics));
+
+    let battery_metrics: Vec<MetricSample> = metrics
+        .iter()
+        .filter(|m| {
+            matches!(
+                m.kind,
+                MetricKind::BatteryPercentage
+                    | MetricKind::BatteryCapacity
+                    | MetricKind::BatteryHealth
+                    | MetricKind::BatteryEnergyNow
+                    | MetricKind::BatteryEnergyFull
+                    | MetricKind::BatteryEnergyFullDesign
+            )
+        })
+        .cloned()
+        .collect();
+
+    let battery_rates = average_rates(&battery_metrics);
     let power_draw_stats = average_for_kind(metrics, MetricKind::PowerDraw);
     let avg_discharge_w = power_draw_stats.average().or(battery_rates.discharge_w);
-    let est_runtime_hours = timeframe_samples
-        .last()
-        .and_then(|sample| estimate_runtime_hours(avg_discharge_w, sample));
+    let est_runtime_hours = estimate_runtime_hours(avg_discharge_w, &battery_metrics);
     let power_draw_by_bucket =
         bucket_stats_for_kind(metrics, MetricKind::PowerDraw, bucket_seconds);
 
@@ -330,16 +342,16 @@ fn summarize(
             )
         );
 
-        if timeframe_samples.is_empty() {
+        if battery_metrics.is_empty() {
             println!("\nNo battery samples available for buckets in {timeframe_label}.");
         } else {
             let (discharge_rates, charge_rates) =
-                battery_rate_buckets(timeframe_samples, bucket_seconds);
+                battery_rate_buckets(&battery_metrics, bucket_seconds);
             println!(
                 "\nBattery stats ({})\n{}",
                 timeframe.label.replace('_', " "),
                 battery_stats_table(
-                    timeframe_samples,
+                    &battery_metrics,
                     &power_draw_by_bucket,
                     &discharge_rates,
                     &charge_rates,
@@ -603,15 +615,11 @@ fn bucket_stats_for_kind_by_source(
     buckets
 }
 
-fn data_span_seconds(samples: &[Sample], metrics: &[MetricSample]) -> Option<f64> {
+fn data_span_seconds(metrics: &[MetricSample]) -> Option<f64> {
     let mut min_ts = f64::INFINITY;
     let mut max_ts = f64::NEG_INFINITY;
 
-    for ts in samples
-        .iter()
-        .map(|s| s.ts)
-        .chain(metrics.iter().map(|m| m.ts))
-    {
+    for ts in metrics.iter().map(|s| s.ts) {
         min_ts = min_ts.min(ts);
         max_ts = max_ts.max(ts);
     }
@@ -803,7 +811,7 @@ fn battery_summary_table(
 }
 
 fn battery_rate_buckets(
-    samples: &[Sample],
+    battery_metrics: &[MetricSample],
     bucket_seconds: i64,
 ) -> (
     BTreeMap<DateTime<Local>, NumberStats>,
@@ -813,7 +821,13 @@ fn battery_rate_buckets(
 
     let mut discharge = BTreeMap::new();
     let mut charge = BTreeMap::new();
-    let mut iter = samples.iter();
+
+    let energy_now_samples: Vec<_> = battery_metrics
+        .iter()
+        .filter(|m| m.kind == MetricKind::BatteryEnergyNow && m.value.is_some())
+        .collect();
+
+    let mut iter = energy_now_samples.iter();
     let mut previous = match iter.next() {
         Some(sample) => sample,
         None => return (discharge, charge),
@@ -824,8 +838,7 @@ fn battery_rate_buckets(
             previous = current;
             continue;
         }
-        let (Some(prev_now), Some(curr_now)) = (previous.energy_now_wh, current.energy_now_wh)
-        else {
+        let (Some(prev_now), Some(curr_now)) = (previous.value, current.value) else {
             previous = current;
             continue;
         };
@@ -853,14 +866,14 @@ fn battery_rate_buckets(
 }
 
 fn battery_stats_table(
-    samples: &[Sample],
+    battery_metrics: &[MetricSample],
     power_draw: &BTreeMap<DateTime<Local>, NumberStats>,
     discharge_rates: &BTreeMap<DateTime<Local>, NumberStats>,
     charge_rates: &BTreeMap<DateTime<Local>, NumberStats>,
     bucket_seconds: i64,
 ) -> Table {
-    let mut buckets: BTreeMap<DateTime<Local>, Vec<&Sample>> = BTreeMap::new();
-    for sample in samples {
+    let mut buckets: BTreeMap<DateTime<Local>, Vec<&MetricSample>> = BTreeMap::new();
+    for sample in battery_metrics {
         let bucket_key = bucket_start(sample.ts, bucket_seconds);
         buckets.entry(bucket_key).or_default().push(sample);
     }
@@ -877,25 +890,34 @@ fn battery_stats_table(
         "Latest status",
     ]));
 
-    for (bucket_start, bucket_samples) in buckets {
-        let pct_values: Vec<f64> = bucket_samples.iter().filter_map(|s| s.percentage).collect();
+    for (bucket_start_dt, bucket_samples) in buckets {
+        let pct_values: Vec<f64> = bucket_samples
+            .iter()
+            .filter(|m| m.kind == MetricKind::BatteryPercentage)
+            .filter_map(|s| s.value)
+            .collect();
         let (min_pct, avg_pct, max_pct) = pct_stats(&pct_values);
         let latest_status = bucket_samples
             .last()
-            .and_then(|s| s.status.as_deref())
+            .and_then(|s| s.details.get("status"))
+            .and_then(|v| v.as_str())
             .unwrap_or("unknown");
         let rates = average_rates(bucket_samples.iter().copied());
         let discharge_power = discharge_rates
-            .get(&bucket_start)
+            .get(&bucket_start_dt)
             .and_then(NumberStats::average)
-            .or_else(|| power_draw.get(&bucket_start).and_then(NumberStats::average))
+            .or_else(|| {
+                power_draw
+                    .get(&bucket_start_dt)
+                    .and_then(NumberStats::average)
+            })
             .or(rates.discharge_w);
         let charge_power = charge_rates
-            .get(&bucket_start)
+            .get(&bucket_start_dt)
             .and_then(NumberStats::average)
             .or(rates.charge_w);
         report.add_row(vec![
-            Cell::new(format_bucket(bucket_start, bucket_seconds))
+            Cell::new(format_bucket(bucket_start_dt, bucket_seconds))
                 .fg(Color::Magenta)
                 .add_attribute(Attribute::Bold),
             value_cell(bucket_samples.len()),
@@ -1230,17 +1252,19 @@ mod tests {
         metric_sample_with_source(kind, "test", ts, value, details)
     }
 
-    fn battery_sample(ts: f64, energy_now_wh: f64, status: &str) -> Sample {
-        Sample {
+    fn battery_metric(ts: f64, kind: MetricKind, value: f64, status: &str) -> MetricSample {
+        MetricSample {
             ts,
-            percentage: None,
-            capacity_pct: None,
-            health_pct: None,
-            energy_now_wh: Some(energy_now_wh),
-            energy_full_wh: Some(20.0),
-            energy_full_design_wh: Some(22.0),
-            status: Some(status.to_string()),
-            source_path: "BAT0".to_string(),
+            kind: kind.clone(),
+            source: "BAT0".to_string(),
+            value: Some(value),
+            unit: match kind {
+                MetricKind::BatteryPercentage
+                | MetricKind::BatteryCapacity
+                | MetricKind::BatteryHealth => Some("%".to_string()),
+                _ => Some("Wh".to_string()),
+            },
+            details: json!({"status": status}),
         }
     }
 
@@ -1359,17 +1383,17 @@ mod tests {
 
     #[test]
     fn battery_rate_buckets_capture_charging_segments() {
-        let samples = vec![
-            battery_sample(0.0, 10.0, "Charging"),
-            battery_sample(300.0, 11.0, "Charging"),
-            battery_sample(600.0, 12.5, "Charging"),
+        let metrics = vec![
+            battery_metric(0.0, MetricKind::BatteryEnergyNow, 10.0, "Charging"),
+            battery_metric(300.0, MetricKind::BatteryEnergyNow, 11.0, "Charging"),
+            battery_metric(600.0, MetricKind::BatteryEnergyNow, 12.5, "Charging"),
         ];
 
-        let (discharge, charge) = battery_rate_buckets(&samples, 300);
+        let (discharge, charge) = battery_rate_buckets(&metrics, 300);
 
         assert!(discharge.is_empty());
-        let first_bucket = bucket_start(samples[1].ts, 300);
-        let second_bucket = bucket_start(samples[2].ts, 300);
+        let first_bucket = bucket_start(metrics[1].ts, 300);
+        let second_bucket = bucket_start(metrics[2].ts, 300);
         let first_rate = charge
             .get(&first_bucket)
             .and_then(NumberStats::average)
@@ -1381,5 +1405,22 @@ mod tests {
 
         assert!((first_rate - 12.0).abs() < 1e-6);
         assert!((second_rate - 18.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn battery_rate_buckets_ignores_mixed_mode_segments() {
+        let metrics = vec![
+            battery_metric(0.0, MetricKind::BatteryEnergyNow, 50.0, "Discharging"),
+            battery_metric(300.0, MetricKind::BatteryEnergyNow, 49.0, "Discharging"),
+            battery_metric(600.0, MetricKind::BatteryEnergyNow, 50.0, "Charging"),
+            battery_metric(900.0, MetricKind::BatteryEnergyNow, 50.5, "Charging"),
+        ];
+
+        let (discharge, charge) = battery_rate_buckets(&metrics, 600);
+
+        let discharge_bucket = bucket_start(metrics[1].ts, 600);
+        let charge_bucket = bucket_start(metrics[3].ts, 600);
+        assert!(discharge.contains_key(&discharge_bucket));
+        assert!(charge.contains_key(&charge_bucket));
     }
 }

@@ -21,6 +21,12 @@ pub enum MetricKind {
     DiskUsage,
     Temperature,
     PowerDraw,
+    BatteryPercentage,
+    BatteryCapacity,
+    BatteryHealth,
+    BatteryEnergyNow,
+    BatteryEnergyFull,
+    BatteryEnergyFullDesign,
 }
 
 impl MetricKind {
@@ -35,6 +41,12 @@ impl MetricKind {
             MetricKind::DiskUsage => "disk_usage",
             MetricKind::Temperature => "temperature",
             MetricKind::PowerDraw => "power_draw",
+            MetricKind::BatteryPercentage => "battery_percentage",
+            MetricKind::BatteryCapacity => "battery_capacity",
+            MetricKind::BatteryHealth => "battery_health",
+            MetricKind::BatteryEnergyNow => "battery_energy_now",
+            MetricKind::BatteryEnergyFull => "battery_energy_full",
+            MetricKind::BatteryEnergyFullDesign => "battery_energy_full_design",
         }
     }
 
@@ -49,6 +61,12 @@ impl MetricKind {
             "disk_usage" => Some(MetricKind::DiskUsage),
             "temperature" => Some(MetricKind::Temperature),
             "power_draw" => Some(MetricKind::PowerDraw),
+            "battery_percentage" => Some(MetricKind::BatteryPercentage),
+            "battery_capacity" => Some(MetricKind::BatteryCapacity),
+            "battery_health" => Some(MetricKind::BatteryHealth),
+            "battery_energy_now" => Some(MetricKind::BatteryEnergyNow),
+            "battery_energy_full" => Some(MetricKind::BatteryEnergyFull),
+            "battery_energy_full_design" => Some(MetricKind::BatteryEnergyFullDesign),
             _ => None,
         }
     }
