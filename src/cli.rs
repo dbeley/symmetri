@@ -108,6 +108,27 @@ fn configure_logging(verbose: bool) {
     let _ = builder.try_init();
 }
 
+fn preset_kinds(preset: ReportPreset) -> &'static [MetricKind] {
+    match preset {
+        ReportPreset::Battery => &[
+            MetricKind::BatteryPercentage,
+            MetricKind::BatteryCapacity,
+            MetricKind::BatteryHealth,
+            MetricKind::BatteryEnergyNow,
+            MetricKind::BatteryEnergyFull,
+            MetricKind::BatteryEnergyFullDesign,
+            MetricKind::PowerDraw,
+        ],
+        ReportPreset::Cpu => &[MetricKind::CpuUsage, MetricKind::CpuFrequency],
+        ReportPreset::Gpu => &[MetricKind::GpuUsage, MetricKind::GpuFrequency],
+        ReportPreset::Memory => &[MetricKind::MemoryUsage],
+        ReportPreset::Network => &[MetricKind::NetworkBytes],
+        ReportPreset::Temperature => &[MetricKind::Temperature],
+        ReportPreset::Disk => &[MetricKind::DiskUsage],
+        ReportPreset::All => &[],
+    }
+}
+
 fn normalize_presets(mut presets: Vec<ReportPreset>) -> Vec<ReportPreset> {
     if presets.is_empty() {
         return vec![ReportPreset::Battery];
@@ -131,46 +152,7 @@ fn normalize_presets(mut presets: Vec<ReportPreset>) -> Vec<ReportPreset> {
 fn metric_kinds_for_presets(presets: &[ReportPreset]) -> Vec<MetricKind> {
     let mut kinds = Vec::new();
     for preset in presets {
-        match preset {
-            ReportPreset::All => {
-                kinds.push(MetricKind::BatteryPercentage);
-                kinds.push(MetricKind::BatteryCapacity);
-                kinds.push(MetricKind::BatteryHealth);
-                kinds.push(MetricKind::BatteryEnergyNow);
-                kinds.push(MetricKind::BatteryEnergyFull);
-                kinds.push(MetricKind::BatteryEnergyFullDesign);
-                kinds.push(MetricKind::PowerDraw);
-                kinds.push(MetricKind::CpuUsage);
-                kinds.push(MetricKind::CpuFrequency);
-                kinds.push(MetricKind::GpuUsage);
-                kinds.push(MetricKind::GpuFrequency);
-                kinds.push(MetricKind::MemoryUsage);
-                kinds.push(MetricKind::NetworkBytes);
-                kinds.push(MetricKind::Temperature);
-                kinds.push(MetricKind::DiskUsage);
-            }
-            ReportPreset::Battery => {
-                kinds.push(MetricKind::BatteryPercentage);
-                kinds.push(MetricKind::BatteryCapacity);
-                kinds.push(MetricKind::BatteryHealth);
-                kinds.push(MetricKind::BatteryEnergyNow);
-                kinds.push(MetricKind::BatteryEnergyFull);
-                kinds.push(MetricKind::BatteryEnergyFullDesign);
-                kinds.push(MetricKind::PowerDraw);
-            }
-            ReportPreset::Cpu => {
-                kinds.push(MetricKind::CpuUsage);
-                kinds.push(MetricKind::CpuFrequency);
-            }
-            ReportPreset::Gpu => {
-                kinds.push(MetricKind::GpuUsage);
-                kinds.push(MetricKind::GpuFrequency);
-            }
-            ReportPreset::Memory => kinds.push(MetricKind::MemoryUsage),
-            ReportPreset::Network => kinds.push(MetricKind::NetworkBytes),
-            ReportPreset::Temperature => kinds.push(MetricKind::Temperature),
-            ReportPreset::Disk => kinds.push(MetricKind::DiskUsage),
-        }
+        kinds.extend_from_slice(preset_kinds(*preset));
     }
     kinds.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     kinds.dedup();
@@ -178,31 +160,11 @@ fn metric_kinds_for_presets(presets: &[ReportPreset]) -> Vec<MetricKind> {
 }
 
 fn has_data_for_preset(preset: ReportPreset, metrics: &[MetricSample]) -> bool {
-    match preset {
-        ReportPreset::All => !metrics.is_empty(),
-        ReportPreset::Battery => metrics.iter().any(|m| {
-            matches!(
-                m.kind,
-                MetricKind::BatteryPercentage
-                    | MetricKind::BatteryCapacity
-                    | MetricKind::BatteryHealth
-                    | MetricKind::BatteryEnergyNow
-                    | MetricKind::BatteryEnergyFull
-                    | MetricKind::BatteryEnergyFullDesign
-                    | MetricKind::PowerDraw
-            )
-        }),
-        ReportPreset::Cpu => metrics
-            .iter()
-            .any(|m| matches!(m.kind, MetricKind::CpuUsage | MetricKind::CpuFrequency)),
-        ReportPreset::Gpu => metrics
-            .iter()
-            .any(|m| matches!(m.kind, MetricKind::GpuUsage | MetricKind::GpuFrequency)),
-        ReportPreset::Memory => metrics.iter().any(|m| m.kind == MetricKind::MemoryUsage),
-        ReportPreset::Network => metrics.iter().any(|m| m.kind == MetricKind::NetworkBytes),
-        ReportPreset::Temperature => metrics.iter().any(|m| m.kind == MetricKind::Temperature),
-        ReportPreset::Disk => metrics.iter().any(|m| m.kind == MetricKind::DiskUsage),
+    if preset == ReportPreset::All {
+        return !metrics.is_empty();
     }
+    let kinds = preset_kinds(preset);
+    metrics.iter().any(|m| kinds.contains(&m.kind))
 }
 
 pub fn run<I, T>(args: I) -> Result<()>
@@ -223,7 +185,7 @@ where
             } else {
                 let code = collect_once(db_path.as_deref(), None)?;
                 if code != 0 {
-                    std::process::exit(code);
+                    return Err(anyhow::anyhow!("Collection failed with exit code {code}"));
                 }
             }
         }
@@ -245,14 +207,15 @@ where
             let presets = normalize_presets(presets);
             let metric_kinds = metric_kinds_for_presets(&presets);
 
-            let metric_total = db::count_metric_samples(&resolved, None)?;
+            let conn = db::init_db_connection(&resolved)?;
+            let metric_total = db::count_metric_samples_with_conn(&conn, None)?;
             if metric_total == 0 {
-                println!("No records available; collect data first.");
-                std::process::exit(1);
+                return Err(anyhow::anyhow!("No records available; collect data first."));
             }
 
             let since_ts = timeframe.since_timestamp(None);
-            let raw_metrics = db::fetch_metric_samples(&resolved, since_ts, Some(&metric_kinds))?;
+            let raw_metrics =
+                db::fetch_metric_samples_with_conn(&conn, since_ts, Some(&metric_kinds))?;
 
             let aggregated_metrics = crate::aggregate::aggregate_multi_device_metrics(&raw_metrics);
             let metric_samples = filter_metrics_by_source(&aggregated_metrics, &sensor_filters);
@@ -262,11 +225,10 @@ where
                 .iter()
                 .any(|preset| has_data_for_preset(*preset, &metric_samples));
             if !has_selected_data {
-                println!(
+                return Err(anyhow::anyhow!(
                     "No records for the selected presets in {}; try a broader timeframe or enable those collectors.",
                     timeframe.label.replace('_', " ")
-                );
-                std::process::exit(1);
+                ));
             }
 
             let output_path = match (graph_path, graph_flag) {
@@ -484,11 +446,15 @@ fn value_cell<T: std::fmt::Display>(value: T) -> Cell {
 
 fn status_cell(status: Option<&str>) -> Cell {
     let status_text = status.unwrap_or("unknown");
-    let color = match status_text.to_ascii_lowercase().as_str() {
-        s if s.contains("charging") && !s.contains("dis") => Color::Green,
-        s if s.contains("discharging") => Color::Yellow,
-        s if s.contains("full") => Color::Blue,
-        _ => Color::White,
+    let lower = status_text.to_ascii_lowercase();
+    let color = if lower.starts_with("discharging") {
+        Color::Yellow
+    } else if lower.starts_with("charging") {
+        Color::Green
+    } else if lower.starts_with("full") {
+        Color::Blue
+    } else {
+        Color::White
     };
     Cell::new(status_text).fg(color)
 }
@@ -932,18 +898,24 @@ fn battery_stats_table(
     report
 }
 
-fn cpu_stats_table(bucket_seconds: i64, usage: &SourceBuckets, freq: &SourceBuckets) -> Table {
+fn freq_usage_stats_table(
+    bucket_seconds: i64,
+    usage_label: &'static str,
+    freq_label: &'static str,
+    usage: &SourceBuckets,
+    freq: &SourceBuckets,
+) -> Table {
     let mut report = themed_table();
     report.set_header(header_cells(&[
         "Source",
         "Window",
         "Samples",
-        "Min usage",
-        "Avg usage",
-        "Peak usage",
-        "Min freq",
-        "Avg freq",
-        "Peak freq",
+        &format!("Min {usage_label}"),
+        &format!("Avg {usage_label}"),
+        &format!("Peak {usage_label}"),
+        &format!("Min {freq_label}"),
+        &format!("Avg {freq_label}"),
+        &format!("Peak {freq_label}"),
     ]));
 
     let mut sources: Vec<&String> = usage.keys().chain(freq.keys()).collect();
@@ -985,64 +957,17 @@ fn cpu_stats_table(bucket_seconds: i64, usage: &SourceBuckets, freq: &SourceBuck
         }
     }
     report
+}
+
+fn cpu_stats_table(bucket_seconds: i64, usage: &SourceBuckets, freq: &SourceBuckets) -> Table {
+    freq_usage_stats_table(bucket_seconds, "usage", "freq", usage, freq)
 }
 
 fn gpu_stats_table(bucket_seconds: i64, usage: &SourceBuckets, freq: &SourceBuckets) -> Table {
-    let mut report = themed_table();
-    report.set_header(header_cells(&[
-        "Source",
-        "Window",
-        "Samples",
-        "Min usage",
-        "Avg usage",
-        "Peak usage",
-        "Min freq",
-        "Avg freq",
-        "Peak freq",
-    ]));
-
-    let mut sources: Vec<&String> = usage.keys().chain(freq.keys()).collect();
-    sources.sort();
-    sources.dedup();
-
-    for source in sources {
-        let usage_buckets = usage.get(source);
-        let freq_buckets = freq.get(source);
-        let mut keys: Vec<DateTime<Local>> = usage_buckets
-            .into_iter()
-            .flat_map(|m| m.keys().copied())
-            .chain(freq_buckets.into_iter().flat_map(|m| m.keys().copied()))
-            .collect();
-        keys.sort();
-        keys.dedup();
-
-        for key in keys {
-            let usage_stats = usage_buckets
-                .and_then(|map| map.get(&key).cloned())
-                .unwrap_or_default();
-            let freq_stats = freq_buckets
-                .and_then(|map| map.get(&key).cloned())
-                .unwrap_or_default();
-            let samples = usage_stats.count.max(freq_stats.count);
-            report.add_row(vec![
-                label_cell(source),
-                Cell::new(format_bucket(key, bucket_seconds))
-                    .fg(Color::Magenta)
-                    .add_attribute(Attribute::Bold),
-                value_cell(samples),
-                value_cell(format_percent(usage_stats.min())),
-                value_cell(format_percent(usage_stats.average())),
-                value_cell(format_percent(usage_stats.max())),
-                value_cell(format_freq(freq_stats.min())),
-                value_cell(format_freq(freq_stats.average())),
-                value_cell(format_freq(freq_stats.max())),
-            ]);
-        }
-    }
-    report
+    freq_usage_stats_table(bucket_seconds, "usage", "freq", usage, freq)
 }
 
-fn memory_stats_table(
+fn usage_stats_table(
     bucket_seconds: i64,
     buckets: &BTreeMap<DateTime<Local>, UsageStats>,
 ) -> Table {
@@ -1073,32 +998,15 @@ fn memory_stats_table(
     report
 }
 
-fn disk_stats_table(bucket_seconds: i64, buckets: &BTreeMap<DateTime<Local>, UsageStats>) -> Table {
-    let mut report = themed_table();
-    report.set_header(header_cells(&[
-        "Window",
-        "Samples",
-        "Min used",
-        "Avg used",
-        "Min used %",
-        "Avg used %",
-        "Peak used %",
-    ]));
+fn memory_stats_table(
+    bucket_seconds: i64,
+    buckets: &BTreeMap<DateTime<Local>, UsageStats>,
+) -> Table {
+    usage_stats_table(bucket_seconds, buckets)
+}
 
-    for (key, stats) in buckets {
-        report.add_row(vec![
-            Cell::new(format_bucket(*key, bucket_seconds))
-                .fg(Color::Magenta)
-                .add_attribute(Attribute::Bold),
-            value_cell(stats.used.count),
-            value_cell(format_opt_bytes(stats.used.min())),
-            value_cell(format_opt_bytes(stats.used.average())),
-            value_cell(format_percent(stats.percent.min())),
-            value_cell(format_percent(stats.percent.average())),
-            value_cell(format_percent(stats.percent.max())),
-        ]);
-    }
-    report
+fn disk_stats_table(bucket_seconds: i64, buckets: &BTreeMap<DateTime<Local>, UsageStats>) -> Table {
+    usage_stats_table(bucket_seconds, buckets)
 }
 
 fn temperature_stats_table(bucket_seconds: i64, buckets: &SourceBuckets) -> Table {
@@ -1212,12 +1120,7 @@ fn format_bucket(dt: DateTime<Local>, bucket_seconds: i64) -> String {
     } else if bucket_seconds < 24 * 3600 {
         dt.format("%m-%d %H:00").to_string()
     } else {
-        let days = bucket_seconds / (24 * 3600);
-        if days <= 1 {
-            dt.format("%Y-%m-%d").to_string()
-        } else {
-            format!("{} (+{days}d)", dt.format("%Y-%m-%d"))
-        }
+        dt.format("%Y-%m-%d").to_string()
     }
 }
 

@@ -87,7 +87,10 @@ pub fn collect_loop(
     sysfs_root: Option<&Path>,
 ) -> Result<()> {
     loop {
-        let _ = collect_once(db_path, sysfs_root)?;
+        let exit_code = collect_once(db_path, sysfs_root)?;
+        if exit_code != 0 {
+            warn!("Collection returned exit code {exit_code}");
+        }
         thread::sleep(Duration::from_secs(interval_seconds));
     }
 }
