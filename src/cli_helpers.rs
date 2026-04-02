@@ -158,10 +158,12 @@ pub(crate) fn is_charging(sample: &MetricSample) -> bool {
         .unwrap_or(false)
 }
 
+#[allow(dead_code)]
 pub fn average_discharge_w(battery_metrics: &[MetricSample]) -> Option<f64> {
     average_rates(battery_metrics).discharge_w
 }
 
+#[allow(dead_code)]
 pub fn average_charge_w(battery_metrics: &[MetricSample]) -> Option<f64> {
     average_rates(battery_metrics).charge_w
 }

@@ -118,10 +118,12 @@ pub fn build_timeframe(
     })
 }
 
+#[allow(dead_code)]
 pub fn timeframe_seconds(timeframe: &Timeframe) -> Option<f64> {
     timeframe.seconds
 }
 
+#[allow(dead_code)]
 pub fn since_timestamp(timeframe: &Timeframe, now: Option<SystemTime>) -> Option<f64> {
     timeframe.since_timestamp(now)
 }
