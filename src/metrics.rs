@@ -3,14 +3,18 @@ use std::ffi::CString;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
-use std::str::FromStr;
+
 use std::thread;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display, EnumString, EnumIter,
+)]
+#[strum(serialize_all = "snake_case")]
 pub enum MetricKind {
     CpuUsage,
     CpuFrequency,
@@ -50,33 +54,14 @@ impl MetricKind {
         }
     }
 
+    #[allow(dead_code)]
     pub fn from_label(raw: &str) -> Option<Self> {
-        match raw {
-            "cpu_usage" => Some(MetricKind::CpuUsage),
-            "cpu_frequency" => Some(MetricKind::CpuFrequency),
-            "gpu_usage" => Some(MetricKind::GpuUsage),
-            "gpu_frequency" => Some(MetricKind::GpuFrequency),
-            "network_bytes" => Some(MetricKind::NetworkBytes),
-            "memory_usage" => Some(MetricKind::MemoryUsage),
-            "disk_usage" => Some(MetricKind::DiskUsage),
-            "temperature" => Some(MetricKind::Temperature),
-            "power_draw" => Some(MetricKind::PowerDraw),
-            "battery_percentage" => Some(MetricKind::BatteryPercentage),
-            "battery_capacity" => Some(MetricKind::BatteryCapacity),
-            "battery_health" => Some(MetricKind::BatteryHealth),
-            "battery_energy_now" => Some(MetricKind::BatteryEnergyNow),
-            "battery_energy_full" => Some(MetricKind::BatteryEnergyFull),
-            "battery_energy_full_design" => Some(MetricKind::BatteryEnergyFullDesign),
-            _ => None,
-        }
+        raw.parse().ok()
     }
-}
 
-impl FromStr for MetricKind {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        MetricKind::from_label(s).ok_or_else(|| format!("Unknown metric kind: {s}"))
+    #[allow(dead_code)]
+    pub fn all_kinds() -> impl Iterator<Item = MetricKind> {
+        <MetricKind as IntoEnumIterator>::iter()
     }
 }
 
