@@ -18,7 +18,7 @@
         pkgs = import nixpkgs { inherit system; };
         app = pkgs.rustPlatform.buildRustPackage {
           pname = "symmetri";
-          version = "0.3.2";
+          version = "0.3.3";
           src = ./.;
           cargoLock = {
             lockFile = ./Cargo.lock;
