@@ -6,21 +6,31 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = import nixpkgs { inherit system; };
         app = pkgs.rustPlatform.buildRustPackage {
           pname = "symmetri";
-          version = "0.3.0";
+          version = "0.3.2";
           src = ./.;
           cargoLock = {
             lockFile = ./Cargo.lock;
           };
           nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.fontconfig pkgs.sqlite ];
+          buildInputs = [
+            pkgs.fontconfig
+            pkgs.sqlite
+          ];
         };
-      in {
+      in
+      {
         packages.default = app;
         apps.default = flake-utils.lib.mkApp { drv = app; };
         devShells.default = pkgs.mkShell {
@@ -45,5 +55,6 @@
             export RUST_LOG=info
           '';
         };
-      });
+      }
+    );
 }
