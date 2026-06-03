@@ -665,7 +665,7 @@ fn compute_network_rates(metrics: &[MetricSample]) -> Vec<NetworkRateSample> {
 
     let mut rates = Vec::new();
     for (_iface, mut samples) in by_iface {
-        samples.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
+        samples.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap_or(std::cmp::Ordering::Equal));
         for window in samples.windows(2) {
             let prev = window[0];
             let next = window[1];
@@ -713,7 +713,7 @@ fn bucket_network_totals(
 
     let mut buckets: BTreeMap<DateTime<Local>, TransferStats> = BTreeMap::new();
     for (_iface, mut samples) in by_iface {
-        samples.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
+        samples.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap_or(std::cmp::Ordering::Equal));
         for window in samples.windows(2) {
             let prev = window[0];
             let next = window[1];

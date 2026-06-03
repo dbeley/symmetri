@@ -367,7 +367,7 @@ fn network_bucket_series(
     // Collect all deltas with timestamps across all interfaces
     let mut all_deltas = Vec::new();
     for (_iface, mut samples) in by_iface {
-        samples.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
+        samples.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap_or(std::cmp::Ordering::Equal));
 
         for window in samples.windows(2) {
             let prev = window[0];
@@ -397,11 +397,11 @@ fn network_bucket_series(
         all_deltas
             .iter()
             .map(|(ts, _, _)| ts)
-            .min_by(|a, b| a.partial_cmp(b).unwrap()),
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)),
         all_deltas
             .iter()
             .map(|(ts, _, _)| ts)
-            .max_by(|a, b| a.partial_cmp(b).unwrap()),
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)),
     ) {
         Some(last - first)
     } else {
