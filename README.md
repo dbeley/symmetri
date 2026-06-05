@@ -104,3 +104,31 @@ symmetri report --preset battery --preset cpu --preset gpu --preset memory --pre
 ```
 
 ![sample image](docs/symmetri_last_4_hours_sample_image.png)
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request or open an issue for bugs, features, or documentation improvements.
+
+### Development
+
+```bash
+# Clone the repository
+git clone https://github.com/dbeley/symmetri
+cd symmetri
+
+# Enter dev shell
+direnv allow  # or: nix develop
+
+# Run tests
+cargo test
+
+# Format code
+cargo fmt
+
+# Lint
+cargo clippy
+```
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
