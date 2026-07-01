@@ -98,13 +98,21 @@ pub fn count_metric_samples_with_conn(conn: &Connection, since_ts: Option<f64>) 
     Ok(count as usize)
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("invalid metric kind `{raw}` in database row")]
+struct MetricKindParseError {
+    raw: String,
+}
+
 fn metric_from_row(row: &Row) -> rusqlite::Result<MetricSample> {
     let kind_raw: String = row.get("kind")?;
-    let kind = MetricKind::from_str(&kind_raw).map_err(|e| {
+    let kind = MetricKind::from_str(&kind_raw).map_err(|_e| {
         rusqlite::Error::FromSqlConversionFailure(
             0,
             rusqlite::types::Type::Text,
-            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+            Box::new(MetricKindParseError {
+                raw: kind_raw.clone(),
+            }),
         )
     })?;
     let details_raw: Option<String> = row.get("details")?;
