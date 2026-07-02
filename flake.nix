@@ -23,16 +23,34 @@
           cargoLock = {
             lockFile = ./Cargo.lock;
           };
-          nativeBuildInputs = [ pkgs.pkg-config ];
+          nativeBuildInputs = [ pkgs.pkg-config pkgs.clippy pkgs.rustfmt ];
           buildInputs = [
             pkgs.fontconfig
             pkgs.sqlite
           ];
+          doCheck = true;
+          checkInputs = [
+            pkgs.fish
+          ];
+          preCheck = ''
+            export HOME=$TMPDIR/fake-home
+          '';
+          checkPhase = ''
+            runHook preCheck
+            cargo test
+            cargo clippy --all-targets --all-features -- -D warnings
+            runHook postCheck
+          '';
         };
       in
       {
         packages.default = app;
         apps.default = flake-utils.lib.mkApp { drv = app; };
+        checks.default = app.overrideAttrs (old: {
+          checkPhase = old.checkPhase + ''
+            cargo fmt --all --check
+          '';
+        });
         devShells.default = pkgs.mkShell {
           shell = pkgs.fish;
           inputsFrom = [ app ];
