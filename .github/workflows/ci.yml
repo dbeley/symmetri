@@ -23,26 +23,8 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Restore cached build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            target/
-            .nix-cargo-incremental/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
-
-      - name: cargo check
-        run: nix develop -c cargo check --all-targets --all-features
-
-      - name: cargo test
-        run: nix develop -c cargo test
-
-      - name: cargo clippy
-        run: nix develop -c cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: cargo fmt --check
-        run: nix develop -c cargo fmt --all --check
+      - name: Build, test, clippy, fmt
+        run: nix flake check
 
       - name: typos
         run: nix develop -c typos
