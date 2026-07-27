@@ -32,7 +32,11 @@ pub fn resolve_db_path(db_path: Option<&Path>) -> PathBuf {
     default_db_path()
 }
 
-pub fn collect_once(db_path: Option<&Path>, sysfs_root: Option<&Path>) -> Result<i32> {
+pub fn collect_once(
+    db_path: Option<&Path>,
+    sysfs_root: Option<&Path>,
+    prune_days: Option<u64>,
+) -> Result<i32> {
     let resolved_db = resolve_db_path(db_path);
     let mut conn = db::init_db_connection(&resolved_db)?;
 
@@ -71,6 +75,20 @@ pub fn collect_once(db_path: Option<&Path>, sysfs_root: Option<&Path>) -> Result
     metric_samples.extend(metrics::collect_metrics(ts));
     db::insert_metric_samples_with_conn(&mut conn, &metric_samples)?;
 
+    // Retention: prune samples older than `prune_days` days, once per tick.
+    // Cheap relative to the collection itself (a single DELETE indexed by ts).
+    if let Some(days) = prune_days {
+        if days > 0 {
+            match db::prune_older_than_days_with_conn(&conn, days) {
+                Ok(removed) if removed > 0 => {
+                    info!("Pruned {removed} samples older than {days} days")
+                }
+                Ok(_) => {}
+                Err(e) => warn!("Pruning failed: {e}"),
+            }
+        }
+    }
+
     if !metric_samples.is_empty() {
         info!(
             "Logged {} metric records ({} batteries)",
@@ -85,9 +103,10 @@ pub fn collect_loop(
     interval_seconds: u64,
     db_path: Option<&Path>,
     sysfs_root: Option<&Path>,
+    prune_days: Option<u64>,
 ) -> Result<()> {
     loop {
-        let exit_code = collect_once(db_path, sysfs_root)?;
+        let exit_code = collect_once(db_path, sysfs_root, prune_days)?;
         if exit_code != 0 {
             warn!("Collection returned exit code {exit_code}");
         }

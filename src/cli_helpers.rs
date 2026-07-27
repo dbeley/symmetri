@@ -1,10 +1,22 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Local, TimeZone};
+use chrono::{DateTime, Local, TimeZone, Utc};
 
 use crate::metrics::{MetricKind, MetricSample};
 use crate::timeframe::Timeframe;
+
+/// Maximum gap (in hours) between two consecutive samples that may still be
+/// interpolated. Beyond this length we assume the machine was off or the
+/// collector missed a tick, and the segment between the two samples is
+/// dropped (rates not averaged, line plots break). Tuned for the default
+/// 5-minute systemd cadence with a 2× margin for jitter.
+pub const MAX_GAP_HOURS: f64 = 10.0 / 60.0;
+
+/// Maximum gap expressed in seconds, used by the plotting layer where we
+/// already work in epoch seconds.
+#[allow(dead_code)]
+pub const MAX_GAP_SECONDS: f64 = MAX_GAP_HOURS * 3600.0;
 
 fn sanitize_component(value: &str) -> Cow<'_, str> {
     if value
@@ -44,6 +56,9 @@ pub fn default_graph_path(
 }
 
 pub fn bucket_span_seconds(timeframe: &Timeframe, data_span_seconds: Option<f64>) -> i64 {
+    // Note: tightened at the short end of the table so 5-minute-collected
+    // data produces dense polygon lines even on `--days 1`/`--hours 6` charts
+    // (previously those ranges drew only a handful of 10-min or 1h buckets).
     let window = timeframe
         .seconds
         .or(data_span_seconds)
@@ -51,9 +66,9 @@ pub fn bucket_span_seconds(timeframe: &Timeframe, data_span_seconds: Option<f64>
 
     match window {
         w if w <= 2.0 * 3600.0 => 5 * 60,
-        w if w <= 6.0 * 3600.0 => 10 * 60,
-        w if w <= 24.0 * 3600.0 => 3600,
-        w if w <= 3.0 * 24.0 * 3600.0 => 2 * 3600,
+        w if w <= 6.0 * 3600.0 => 5 * 60,
+        w if w <= 24.0 * 3600.0 => 15 * 60,
+        w if w <= 3.0 * 24.0 * 3600.0 => 3600,
         w if w <= 7.0 * 24.0 * 3600.0 => 6 * 3600,
         w if w <= 30.0 * 24.0 * 3600.0 => 24 * 3600,
         w if w <= 90.0 * 24.0 * 3600.0 => 3 * 24 * 3600,
@@ -61,14 +76,43 @@ pub fn bucket_span_seconds(timeframe: &Timeframe, data_span_seconds: Option<f64>
     }
 }
 
+/// Aligns an epoch-seconds timestamp to a bucket boundary in local time.
+///
+/// DST-safe: samples that fall in a spring-forward gap (`None` from
+/// `timestamp_opt`) are aligned using a UTC snapshot of the offset bracketing
+/// the gap, so we never panic. DST folds pick the earlier of the two
+/// ambiguous local times for consistent bucketing.
 pub fn bucket_start(ts: f64, bucket_seconds: i64) -> DateTime<Local> {
-    let local_dt = Local.timestamp_opt(ts as i64, 0).unwrap();
-    let offset_seconds = -local_dt.offset().utc_minus_local(); // convert to python-style offset
-    let bucket_epoch = (((ts + offset_seconds as f64) / bucket_seconds as f64).floor()
+    local_bucket_start(ts as i64, bucket_seconds, 0)
+}
+
+fn local_bucket_start(ts_secs: i64, bucket_seconds: i64, nanos: u32) -> DateTime<Local> {
+    let local_dt = match Local.timestamp_opt(ts_secs, nanos).earliest() {
+        Some(dt) => dt,
+        None => {
+            // Spring-forward gap (or missing tzdata). Fall back to UTC-as-local:
+            // the wall-clock label may be off by up to an hour, but the instant
+            // stays correct and bucket alignment degrades gracefully.
+            let utc = Utc
+                .timestamp_opt(ts_secs, nanos)
+                .single()
+                .expect("epoch seconds are always representable as UTC");
+            DateTime::<Local>::from(utc)
+        }
+    };
+    let offset_seconds = -local_dt.offset().utc_minus_local();
+    let bucket_epoch = (((ts_secs as f64 + offset_seconds as f64) / bucket_seconds as f64).floor()
         * bucket_seconds as f64)
         - offset_seconds as f64;
     let aligned = bucket_epoch.max(0.0) as i64;
-    Local.timestamp_opt(aligned, 0).unwrap()
+    match Local.timestamp_opt(aligned, 0).earliest() {
+        Some(dt) => dt,
+        None => DateTime::<Local>::from(
+            Utc.timestamp_opt(aligned, 0)
+                .single()
+                .expect("aligned epoch is always representable as UTC"),
+        ),
+    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -101,8 +145,6 @@ impl RateAccumulator {
 pub fn average_rates<'a>(
     battery_metrics: impl IntoIterator<Item = &'a MetricSample>,
 ) -> AverageRates {
-    const MAX_GAP_HOURS: f64 = 5.0 / 60.0;
-
     let mut discharge = RateAccumulator::default();
     let mut charge = RateAccumulator::default();
 
@@ -352,16 +394,15 @@ mod tests {
             .unwrap();
         let bucket = bucket_start(sample_dt.timestamp() as f64, span);
 
-        assert_eq!(span, 10 * 60);
-        assert_eq!(bucket.minute() % 10, 0);
+        assert_eq!(span, 5 * 60);
+        assert_eq!(bucket.minute() % 5, 0);
         assert_eq!(bucket.second(), 0);
 
         let one_day = build_timeframe(0, 1, 0, false).unwrap();
         let span_day = bucket_span_seconds(&one_day, None);
         let bucket_day = bucket_start(sample_dt.timestamp() as f64, span_day);
-        assert_eq!(span_day, 3600);
-        assert_eq!(bucket_day.hour(), sample_dt.hour());
-        assert_eq!(bucket_day.minute(), 0);
+        assert_eq!(span_day, 15 * 60);
+        assert_eq!(bucket_day.minute() % 15, 0);
         assert_eq!(bucket_day.second(), 0);
     }
 
@@ -389,7 +430,7 @@ mod tests {
         use crate::timeframe::build_timeframe;
         let timeframe = build_timeframe(6, 0, 0, true).unwrap();
         let span = bucket_span_seconds(&timeframe, Some(6.0 * 3600.0));
-        assert_eq!(span, 10 * 60);
+        assert_eq!(span, 5 * 60);
 
         let weekly = bucket_span_seconds(&timeframe, Some(200.0 * 24.0 * 3600.0));
         assert_eq!(weekly, 7 * 24 * 3600);
