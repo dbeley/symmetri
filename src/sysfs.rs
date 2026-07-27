@@ -177,14 +177,9 @@ pub fn find_battery_paths(sysfs_root: &Path) -> Vec<PathBuf> {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path
-            .file_name()
-            .and_then(|p| p.to_str())
-            .map(|name| name.starts_with("BAT"))
-            .unwrap_or(false)
-        {
-            continue;
-        }
+        // Detection by `type` file alone (must contain "battery") rather than
+        // requiring a `BAT*` name. Some firmwares expose batteries as
+        // `macsmc-battery`, `BMS`, etc., which would be missed by the prefix.
         let type_file = path.join("type");
         if let Ok(raw) = fs::read_to_string(&type_file) {
             if raw.trim().eq_ignore_ascii_case("battery") {
@@ -302,6 +297,24 @@ mod tests {
 
         let paths = find_battery_paths(tmp.path());
         assert_eq!(paths, vec![bat0]);
+    }
+
+    #[test]
+    fn find_battery_paths_detects_non_bat_prefixed_names() {
+        // Some firmwares expose batteries as `macsmc-battery`, `BMS`, etc.
+        // Detection by the `type` file's content alone (with no name prefix
+        // requirement) ensures they aren't silently missed.
+        let tmp = tempfile::tempdir().unwrap();
+        let smc = tmp.path().join("macsmc-battery");
+        fs::create_dir(&smc).unwrap();
+        write(&smc.join("type"), "Battery\n");
+
+        let ac = tmp.path().join("ADP1");
+        fs::create_dir(&ac).unwrap();
+        write(&ac.join("type"), "Mains\n");
+
+        let paths = find_battery_paths(tmp.path());
+        assert_eq!(paths, vec![smc]);
     }
 
     #[test]
