@@ -118,6 +118,13 @@ pub fn collect_loop(
 mod tests {
     use super::*;
     use std::env;
+    use std::sync::{Mutex, OnceLock};
+
+    // ponytail: process-global env var; parallel tests race on SYMMETRI_DB.
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     struct EnvGuard {
         key: &'static str,
@@ -144,7 +151,8 @@ mod tests {
 
     #[test]
     fn resolve_db_path_prefers_argument() {
-        let _guard = EnvGuard::set("SYMMETRI_DB", "/tmp/should_not_use.db");
+        let _lock = env_lock().lock().unwrap();
+        let _g = EnvGuard::set("SYMMETRI_DB", "/tmp/should_not_use.db");
         let provided = PathBuf::from("/tmp/preferred.db");
         let resolved = resolve_db_path(Some(&provided));
         assert_eq!(resolved, provided);
@@ -152,15 +160,17 @@ mod tests {
 
     #[test]
     fn resolve_db_path_expands_home_prefix() {
+        let _lock = env_lock().lock().unwrap();
         let home = dirs::home_dir().expect("home directory not found");
-        let _guard = EnvGuard::set("SYMMETRI_DB", "~/custom/battery.db");
+        let _g = EnvGuard::set("SYMMETRI_DB", "~/custom/battery.db");
         let resolved = resolve_db_path(None);
         assert_eq!(resolved, home.join("custom").join("battery.db"));
     }
 
     #[test]
     fn resolve_db_path_uses_env_verbatim() {
-        let _guard = EnvGuard::set("SYMMETRI_DB", "/tmp/from_env.db");
+        let _lock = env_lock().lock().unwrap();
+        let _g = EnvGuard::set("SYMMETRI_DB", "/tmp/from_env.db");
         let resolved = resolve_db_path(None);
         assert_eq!(resolved, PathBuf::from("/tmp/from_env.db"));
     }
