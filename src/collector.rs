@@ -32,7 +32,11 @@ pub fn resolve_db_path(db_path: Option<&Path>) -> PathBuf {
     default_db_path()
 }
 
-pub fn collect_once(db_path: Option<&Path>, sysfs_root: Option<&Path>) -> Result<i32> {
+pub fn collect_once(
+    db_path: Option<&Path>,
+    sysfs_root: Option<&Path>,
+    prune_days: Option<u64>,
+) -> Result<i32> {
     let resolved_db = resolve_db_path(db_path);
     let mut conn = db::init_db_connection(&resolved_db)?;
 
@@ -71,6 +75,20 @@ pub fn collect_once(db_path: Option<&Path>, sysfs_root: Option<&Path>) -> Result
     metric_samples.extend(metrics::collect_metrics(ts));
     db::insert_metric_samples_with_conn(&mut conn, &metric_samples)?;
 
+    // Retention: prune samples older than `prune_days` days, once per tick.
+    // Cheap relative to the collection itself (a single DELETE indexed by ts).
+    if let Some(days) = prune_days {
+        if days > 0 {
+            match db::prune_older_than_days_with_conn(&conn, days) {
+                Ok(removed) if removed > 0 => {
+                    info!("Pruned {removed} samples older than {days} days")
+                }
+                Ok(_) => {}
+                Err(e) => warn!("Pruning failed: {e}"),
+            }
+        }
+    }
+
     if !metric_samples.is_empty() {
         info!(
             "Logged {} metric records ({} batteries)",
@@ -85,9 +103,10 @@ pub fn collect_loop(
     interval_seconds: u64,
     db_path: Option<&Path>,
     sysfs_root: Option<&Path>,
+    prune_days: Option<u64>,
 ) -> Result<()> {
     loop {
-        let exit_code = collect_once(db_path, sysfs_root)?;
+        let exit_code = collect_once(db_path, sysfs_root, prune_days)?;
         if exit_code != 0 {
             warn!("Collection returned exit code {exit_code}");
         }
@@ -99,6 +118,13 @@ pub fn collect_loop(
 mod tests {
     use super::*;
     use std::env;
+    use std::sync::{Mutex, OnceLock};
+
+    // ponytail: process-global env var; parallel tests race on SYMMETRI_DB.
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     struct EnvGuard {
         key: &'static str,
@@ -125,7 +151,8 @@ mod tests {
 
     #[test]
     fn resolve_db_path_prefers_argument() {
-        let _guard = EnvGuard::set("SYMMETRI_DB", "/tmp/should_not_use.db");
+        let _lock = env_lock().lock().unwrap();
+        let _g = EnvGuard::set("SYMMETRI_DB", "/tmp/should_not_use.db");
         let provided = PathBuf::from("/tmp/preferred.db");
         let resolved = resolve_db_path(Some(&provided));
         assert_eq!(resolved, provided);
@@ -133,15 +160,17 @@ mod tests {
 
     #[test]
     fn resolve_db_path_expands_home_prefix() {
+        let _lock = env_lock().lock().unwrap();
         let home = dirs::home_dir().expect("home directory not found");
-        let _guard = EnvGuard::set("SYMMETRI_DB", "~/custom/battery.db");
+        let _g = EnvGuard::set("SYMMETRI_DB", "~/custom/battery.db");
         let resolved = resolve_db_path(None);
         assert_eq!(resolved, home.join("custom").join("battery.db"));
     }
 
     #[test]
     fn resolve_db_path_uses_env_verbatim() {
-        let _guard = EnvGuard::set("SYMMETRI_DB", "/tmp/from_env.db");
+        let _lock = env_lock().lock().unwrap();
+        let _g = EnvGuard::set("SYMMETRI_DB", "/tmp/from_env.db");
         let resolved = resolve_db_path(None);
         assert_eq!(resolved, PathBuf::from("/tmp/from_env.db"));
     }

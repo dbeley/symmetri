@@ -2,23 +2,22 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Result;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Local, TimeDelta};
 use log::{info, warn};
-use ordered_float::OrderedFloat;
 use plotters::coord::Shift;
 use plotters::prelude::*;
 use plotters::series::LineSeries;
 
-use crate::cli::ReportPreset;
-use crate::metrics::{MetricKind, MetricSample};
+use crate::cli_helpers::{bucket_span_seconds, bucket_start, MAX_GAP_SECONDS};
+use crate::metrics::{MetricKind, MetricSample, ReportPreset};
 use crate::timeframe::Timeframe;
 
 struct MetricSeries {
     label: String,
-    points: Vec<(DateTime<Utc>, f64)>,
+    points: SeriesPoints,
 }
 
-type SeriesPoints = Vec<(DateTime<Utc>, f64)>;
+type SeriesPoints = Vec<(DateTime<Local>, f64)>;
 
 struct ChartSpec {
     title: String,
@@ -58,19 +57,28 @@ fn build_charts(
     presets: &[ReportPreset],
     timeframe: &Timeframe,
 ) -> Vec<ChartSpec> {
+    // One bucket width is shared by every chart so the graph and the printed
+    // tables describe the same time cadence.
+    let bucket_seconds = bucket_span_seconds(timeframe, data_span_seconds(metrics));
     let mut charts = Vec::new();
     let label = timeframe.label.replace('_', " ");
 
     if presets.contains(&ReportPreset::Battery) {
         let mut series = Vec::new();
-        let percent_points = metric_series(metrics, MetricKind::BatteryPercentage);
+        let percent_points = bucket_mean_series(
+            metrics,
+            MetricKind::BatteryPercentage,
+            bucket_seconds,
+            |v, _| v,
+        );
         if !percent_points.is_empty() {
             series.push(MetricSeries {
                 label: "Charge %".to_string(),
                 points: percent_points,
             });
         }
-        let health_points = metric_series(metrics, MetricKind::BatteryHealth);
+        let health_points =
+            bucket_mean_series(metrics, MetricKind::BatteryHealth, bucket_seconds, |v, _| v);
         if !health_points.is_empty() {
             series.push(MetricSeries {
                 label: "Health %".to_string(),
@@ -85,7 +93,8 @@ fn build_charts(
             });
         }
 
-        let power_draw = aggregate_metric_series(metrics, MetricKind::PowerDraw, |v, _| v);
+        let power_draw =
+            bucket_mean_series(metrics, MetricKind::PowerDraw, bucket_seconds, |v, _| v);
         if !power_draw.is_empty() {
             charts.push(ChartSpec {
                 title: format!("Power draw ({label})"),
@@ -99,7 +108,8 @@ fn build_charts(
     }
 
     if presets.contains(&ReportPreset::Cpu) {
-        let usage = aggregate_metric_series_by_source(metrics, MetricKind::CpuUsage, |v, _| v);
+        let usage =
+            bucket_mean_series_by_source(metrics, MetricKind::CpuUsage, bucket_seconds, |v, _| v);
         if !usage.is_empty() {
             charts.push(ChartSpec {
                 title: format!("CPU usage ({label})"),
@@ -107,7 +117,12 @@ fn build_charts(
                 series: usage,
             });
         }
-        let freq = aggregate_metric_series_by_source(metrics, MetricKind::CpuFrequency, |v, _| v);
+        let freq = bucket_mean_series_by_source(
+            metrics,
+            MetricKind::CpuFrequency,
+            bucket_seconds,
+            |v, _| v,
+        );
         if !freq.is_empty() {
             charts.push(ChartSpec {
                 title: format!("CPU frequency ({label})"),
@@ -118,7 +133,8 @@ fn build_charts(
     }
 
     if presets.contains(&ReportPreset::Gpu) {
-        let usage = aggregate_metric_series_by_source(metrics, MetricKind::GpuUsage, |v, _| v);
+        let usage =
+            bucket_mean_series_by_source(metrics, MetricKind::GpuUsage, bucket_seconds, |v, _| v);
         if !usage.is_empty() {
             charts.push(ChartSpec {
                 title: format!("GPU usage ({label})"),
@@ -126,7 +142,12 @@ fn build_charts(
                 series: usage,
             });
         }
-        let freq = aggregate_metric_series_by_source(metrics, MetricKind::GpuFrequency, |v, _| v);
+        let freq = bucket_mean_series_by_source(
+            metrics,
+            MetricKind::GpuFrequency,
+            bucket_seconds,
+            |v, _| v,
+        );
         if !freq.is_empty() {
             charts.push(ChartSpec {
                 title: format!("GPU frequency ({label})"),
@@ -137,9 +158,12 @@ fn build_charts(
     }
 
     if presets.contains(&ReportPreset::Memory) {
-        let memory = aggregate_metric_series(metrics, MetricKind::MemoryUsage, |used, _| {
-            bytes_to_gib(used)
-        });
+        let memory = bucket_mean_series(
+            metrics,
+            MetricKind::MemoryUsage,
+            bucket_seconds,
+            |used, _| bytes_to_gib(used),
+        );
         if !memory.is_empty() {
             charts.push(ChartSpec {
                 title: format!("Memory usage ({label})"),
@@ -153,8 +177,9 @@ fn build_charts(
     }
 
     if presets.contains(&ReportPreset::Disk) {
-        let disk =
-            aggregate_metric_series(metrics, MetricKind::DiskUsage, |used, _| bytes_to_gib(used));
+        let disk = bucket_mean_series(metrics, MetricKind::DiskUsage, bucket_seconds, |used, _| {
+            bytes_to_gib(used)
+        });
         if !disk.is_empty() {
             charts.push(ChartSpec {
                 title: format!("Disk usage ({label})"),
@@ -168,7 +193,7 @@ fn build_charts(
     }
 
     if presets.contains(&ReportPreset::Network) {
-        let (rx, tx) = network_bucket_series(metrics, timeframe);
+        let (rx, tx) = network_bucket_series(metrics, bucket_seconds);
         let mut series = Vec::new();
         if !rx.is_empty() {
             series.push(MetricSeries {
@@ -192,7 +217,12 @@ fn build_charts(
     }
 
     if presets.contains(&ReportPreset::Temperature) {
-        let temps = aggregate_metric_series_by_source(metrics, MetricKind::Temperature, |v, _| v);
+        let temps = bucket_mean_series_by_source(
+            metrics,
+            MetricKind::Temperature,
+            bucket_seconds,
+            |v, _| v,
+        );
         if !temps.is_empty() {
             charts.push(ChartSpec {
                 title: format!("Temperature ({label})"),
@@ -206,7 +236,7 @@ fn build_charts(
 }
 
 fn plot_chart(area: DrawingArea<BitMapBackend, Shift>, chart: &ChartSpec) -> Result<()> {
-    let mut all_points: Vec<(DateTime<Utc>, f64)> = Vec::new();
+    let mut all_points: SeriesPoints = Vec::new();
     for series in &chart.series {
         all_points.extend_from_slice(&series.points);
     }
@@ -216,6 +246,15 @@ fn plot_chart(area: DrawingArea<BitMapBackend, Shift>, chart: &ChartSpec) -> Res
     };
     let Some(max_ts) = all_points.iter().map(|(ts, _)| *ts).max() else {
         return Ok(());
+    };
+
+    // Guard against degenerate x-range (single bucket). plotters' coordinate
+    // builder does not handle zero-width ranges; pad by ±60s.
+    let (min_ts, max_ts) = if max_ts == min_ts {
+        let pad = TimeDelta::seconds(60);
+        (min_ts - pad, max_ts + pad)
+    } else {
+        (min_ts, max_ts)
     };
 
     let mut min_y = f64::INFINITY;
@@ -243,17 +282,27 @@ fn plot_chart(area: DrawingArea<BitMapBackend, Shift>, chart: &ChartSpec) -> Res
         .configure_mesh()
         .x_labels(5)
         .y_labels(6)
-        .x_desc("Time")
+        .x_desc("Time (local)")
         .y_desc(chart.y_desc.as_str())
         .light_line_style(WHITE.mix(0.15))
         .draw()?;
 
     for (idx, series) in chart.series.iter().enumerate() {
         let color = Palette99::pick(idx).to_rgba();
-        chart_ctx
-            .draw_series(LineSeries::new(series.points.clone(), &color))?
-            .label(series.label.clone())
-            .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 10, y)], color));
+        // Break the line wherever two consecutive points are more than
+        // MAX_GAP_SECONDS apart (machine off, sleep, missed collector ticks).
+        // Each run is a separate LineSeries, but only the first carries the
+        // legend entry so duplicates don't appear.
+        let mut segments = split_by_gaps(&series.points).into_iter();
+        if let Some(first) = segments.next() {
+            chart_ctx
+                .draw_series(LineSeries::new(first, &color))?
+                .label(series.label.clone())
+                .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 10, y)], color));
+            for rest in segments {
+                chart_ctx.draw_series(LineSeries::new(rest, &color))?;
+            }
+        }
     }
 
     chart_ctx
@@ -265,79 +314,94 @@ fn plot_chart(area: DrawingArea<BitMapBackend, Shift>, chart: &ChartSpec) -> Res
     Ok(())
 }
 
-fn metric_series(metrics: &[MetricSample], kind: MetricKind) -> Vec<(DateTime<Utc>, f64)> {
-    metrics
-        .iter()
-        .filter(|m| m.kind == kind)
-        .filter_map(|metric| {
-            let ts = ts_to_datetime(metric.ts)?;
-            let value = metric.value?;
-            Some((ts, value))
-        })
-        .collect()
+/// Splits a sorted point list into contiguous runs separated by gaps longer
+/// than `MAX_GAP_SECONDS` (machine off, etc.). Each returned Vec is suitable
+/// as input to one `LineSeries` so the line does not interpolate across the
+/// gap. Input is expected to be sorted ascending by timestamp.
+fn split_by_gaps(points: &[(DateTime<Local>, f64)]) -> Vec<SeriesPoints> {
+    let max_gap = TimeDelta::seconds(MAX_GAP_SECONDS.max(0.0) as i64);
+    let mut out = Vec::new();
+    let mut current: SeriesPoints = Vec::new();
+    for point in points {
+        if let Some(last) = current.last() {
+            let dt = point.0.signed_duration_since(last.0);
+            if dt > max_gap {
+                // `current.last()` returning Some means current is non-empty.
+                out.push(std::mem::take(&mut current));
+            }
+        }
+        current.push(*point);
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
 }
 
-fn aggregate_metric_series<F>(
+/// Averages all samples of `kind` into fixed-width local-time buckets. Empty
+/// buckets are absent from the output — that absence is what produces a gap
+/// when [`split_by_gaps`] walks the series.
+fn bucket_mean_series<F>(
     metrics: &[MetricSample],
     kind: MetricKind,
+    bucket_seconds: i64,
     mut map_value: F,
-) -> Vec<(DateTime<Utc>, f64)>
+) -> SeriesPoints
 where
     F: FnMut(f64, &MetricSample) -> f64,
 {
-    let mut grouped: BTreeMap<OrderedFloat<f64>, Vec<f64>> = BTreeMap::new();
+    let mut grouped: BTreeMap<DateTime<Local>, Vec<f64>> = BTreeMap::new();
     for sample in metrics.iter().filter(|m| m.kind == kind) {
         if let Some(value) = sample.value {
+            let bucket = bucket_start(sample.ts, bucket_seconds);
             grouped
-                .entry(OrderedFloat(sample.ts))
+                .entry(bucket)
                 .or_default()
                 .push(map_value(value, sample));
         }
     }
-
     grouped
         .into_iter()
-        .filter_map(|(ts, values)| {
-            if values.is_empty() {
-                return None;
-            }
+        .filter(|(_, values)| !values.is_empty())
+        .map(|(dt, values)| {
             let avg = values.iter().sum::<f64>() / values.len() as f64;
-            ts_to_datetime(ts.into_inner()).map(|dt| (dt, avg))
+            (dt, avg)
         })
         .collect()
 }
 
-fn aggregate_metric_series_by_source<F>(
+/// Same as [`bucket_mean_series`] but keeps one series per `source` (e.g. one
+/// line per CPU core / GPU / thermal zone).
+fn bucket_mean_series_by_source<F>(
     metrics: &[MetricSample],
     kind: MetricKind,
+    bucket_seconds: i64,
     mut map_value: F,
 ) -> Vec<MetricSeries>
 where
     F: FnMut(f64, &MetricSample) -> f64,
 {
-    let mut grouped: BTreeMap<String, BTreeMap<OrderedFloat<f64>, Vec<f64>>> = BTreeMap::new();
+    let mut grouped: BTreeMap<String, BTreeMap<DateTime<Local>, Vec<f64>>> = BTreeMap::new();
     for sample in metrics.iter().filter(|m| m.kind == kind) {
         if let Some(value) = sample.value {
+            let bucket = bucket_start(sample.ts, bucket_seconds);
             grouped
                 .entry(sample.source.clone())
                 .or_default()
-                .entry(OrderedFloat(sample.ts))
+                .entry(bucket)
                 .or_default()
                 .push(map_value(value, sample));
         }
     }
-
     let mut series = Vec::new();
     for (source, buckets) in grouped {
         let mut points = Vec::new();
-        for (ts, values) in buckets {
+        for (dt, values) in buckets {
             if values.is_empty() {
                 continue;
             }
             let avg = values.iter().sum::<f64>() / values.len() as f64;
-            if let Some(dt) = ts_to_datetime(ts.into_inner()) {
-                points.push((dt, avg));
-            }
+            points.push((dt, avg));
         }
         if !points.is_empty() {
             series.push(MetricSeries {
@@ -351,11 +415,8 @@ where
 
 fn network_bucket_series(
     metrics: &[MetricSample],
-    timeframe: &Timeframe,
+    bucket_seconds: i64,
 ) -> (SeriesPoints, SeriesPoints) {
-    use crate::cli_helpers::{bucket_span_seconds, bucket_start};
-    use chrono::Local;
-
     let mut by_iface: BTreeMap<&str, Vec<&MetricSample>> = BTreeMap::new();
     for sample in metrics
         .iter()
@@ -364,16 +425,24 @@ fn network_bucket_series(
         by_iface.entry(&sample.source).or_default().push(sample);
     }
 
-    // Collect all deltas with timestamps across all interfaces
-    let mut all_deltas = Vec::new();
+    let mut rx_buckets: BTreeMap<DateTime<Local>, f64> = BTreeMap::new();
+    let mut tx_buckets: BTreeMap<DateTime<Local>, f64> = BTreeMap::new();
+
     for (_iface, mut samples) in by_iface {
-        samples.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
+        samples.sort_by(|a, b| a.ts.total_cmp(&b.ts));
 
         for window in samples.windows(2) {
             let prev = window[0];
             let next = window[1];
             let dt = next.ts - prev.ts;
             if dt <= 0.0 {
+                continue;
+            }
+
+            // Skip intervals spanning a gap larger than the cadence: the
+            // counters were not sampled while the machine was off, so the
+            // per-bucket total across that window is meaningless.
+            if dt > MAX_GAP_SECONDS {
                 continue;
             }
 
@@ -387,57 +456,21 @@ fn network_bucket_series(
             );
 
             if rx_delta > 0.0 || tx_delta > 0.0 {
-                all_deltas.push((next.ts, rx_delta, tx_delta));
+                let bucket = bucket_start(next.ts, bucket_seconds);
+                *rx_buckets.entry(bucket).or_insert(0.0) += rx_delta;
+                *tx_buckets.entry(bucket).or_insert(0.0) += tx_delta;
             }
         }
     }
 
-    // Determine data span for bucket size calculation
-    let data_span = if let (Some(first), Some(last)) = (
-        all_deltas
-            .iter()
-            .map(|(ts, _, _)| ts)
-            .min_by(|a, b| a.partial_cmp(b).unwrap()),
-        all_deltas
-            .iter()
-            .map(|(ts, _, _)| ts)
-            .max_by(|a, b| a.partial_cmp(b).unwrap()),
-    ) {
-        Some(last - first)
-    } else {
-        None
-    };
-
-    let bucket_seconds = bucket_span_seconds(timeframe, data_span);
-
-    // Group deltas by time bucket and sum them
-    let mut rx_buckets: BTreeMap<DateTime<Local>, f64> = BTreeMap::new();
-    let mut tx_buckets: BTreeMap<DateTime<Local>, f64> = BTreeMap::new();
-
-    for (ts, rx_delta, tx_delta) in all_deltas {
-        let bucket = bucket_start(ts, bucket_seconds);
-        *rx_buckets.entry(bucket).or_insert(0.0) += rx_delta;
-        *tx_buckets.entry(bucket).or_insert(0.0) += tx_delta;
-    }
-
-    // Convert to series points
-    let mut rx_series = Vec::new();
-    let mut tx_series = Vec::new();
-
-    for (bucket, total) in rx_buckets {
-        if let Some(utc_ts) = ts_to_datetime(bucket.timestamp() as f64) {
-            rx_series.push((utc_ts, total / 1_048_576.0)); // Convert to MiB
-        }
-    }
-
-    for (bucket, total) in tx_buckets {
-        if let Some(utc_ts) = ts_to_datetime(bucket.timestamp() as f64) {
-            tx_series.push((utc_ts, total / 1_048_576.0)); // Convert to MiB
-        }
-    }
-
-    rx_series.sort_by_key(|(ts, _)| *ts);
-    tx_series.sort_by_key(|(ts, _)| *ts);
+    let rx_series = rx_buckets
+        .into_iter()
+        .map(|(bucket, total)| (bucket, total / 1_048_576.0))
+        .collect();
+    let tx_series = tx_buckets
+        .into_iter()
+        .map(|(bucket, total)| (bucket, total / 1_048_576.0))
+        .collect();
 
     (rx_series, tx_series)
 }
@@ -460,15 +493,32 @@ fn bytes_to_gib(used: f64) -> f64 {
     used / (1024.0 * 1024.0 * 1024.0)
 }
 
-fn ts_to_datetime(ts: f64) -> Option<DateTime<Utc>> {
-    let seconds = ts.trunc() as i64;
-    let nanos = ((ts.fract() * 1_000_000_000.0).round() as u32).min(999_999_999);
-    Utc.timestamp_opt(seconds, nanos).single()
+/// Span (max−min ts) of the provided samples, used to choose a bucket width
+/// consistent with the printed report tables.
+fn data_span_seconds(metrics: &[MetricSample]) -> Option<f64> {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    let mut any = false;
+    for m in metrics {
+        if m.ts < min {
+            min = m.ts;
+            any = true;
+        }
+        if m.ts > max {
+            max = m.ts;
+        }
+    }
+    if !any {
+        return None;
+    }
+    Some(max - min)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
+    use serde_json::json;
 
     fn metric_sample(source: &str, ts: f64, value: f64, kind: MetricKind) -> MetricSample {
         MetricSample {
@@ -482,18 +532,113 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_metric_series_is_per_source() {
+    fn bucket_mean_series_by_source_keeps_per_source_lines() {
+        // 5-min bucket: 0 and 60 land in the same bucket for cpu0 → averaged.
         let metrics = vec![
             metric_sample("cpu0", 0.0, 10.0, MetricKind::CpuUsage),
             metric_sample("cpu1", 0.0, 20.0, MetricKind::CpuUsage),
             metric_sample("cpu0", 60.0, 30.0, MetricKind::CpuUsage),
         ];
-
-        let series = aggregate_metric_series_by_source(&metrics, MetricKind::CpuUsage, |v, _| v);
+        let series = bucket_mean_series_by_source(&metrics, MetricKind::CpuUsage, 5 * 60, |v, _| v);
         assert_eq!(series.len(), 2);
         let cpu0 = series.iter().find(|s| s.label == "cpu0").unwrap();
         let cpu1 = series.iter().find(|s| s.label == "cpu1").unwrap();
-        assert_eq!(cpu0.points.len(), 2);
+        // cpu0: (10 + 30) / 2 = 20 averaged into one bucket
+        assert_eq!(cpu0.points.len(), 1);
+        assert!((cpu0.points[0].1 - 20.0).abs() < 1e-9);
         assert_eq!(cpu1.points.len(), 1);
+        assert!((cpu1.points[0].1 - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn split_by_gaps_breaks_at_downtime() {
+        let base = chrono::Local.timestamp_opt(0, 0).single().unwrap();
+        let a = base + TimeDelta::seconds(0);
+        let b = base + TimeDelta::seconds(60);
+        // Gap of 30 minutes (well above MAX_GAP_SECONDS = 600s = 10 min).
+        let c = base + TimeDelta::seconds(60 + 1800);
+        let d = base + TimeDelta::seconds(60 + 1860);
+
+        let points: SeriesPoints = vec![(a, 1.0), (b, 2.0), (c, 3.0), (d, 4.0)];
+        let runs = split_by_gaps(&points);
+        assert_eq!(runs.len(), 2, "expected a break across the 30-min gap");
+        assert_eq!(runs[0].len(), 2);
+        assert_eq!(runs[1].len(), 2);
+    }
+
+    #[test]
+    fn split_by_gaps_keeps_contiguous_run() {
+        let base = chrono::Local.timestamp_opt(0, 0).single().unwrap();
+        let points: SeriesPoints = vec![
+            (base, 1.0),
+            (base + TimeDelta::seconds(60), 2.0),
+            (base + TimeDelta::seconds(120), 3.0),
+        ];
+        let runs = split_by_gaps(&points);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].len(), 3);
+    }
+
+    #[test]
+    fn split_by_gaps_breaks_exactly_at_threshold() {
+        let base = chrono::Local.timestamp_opt(0, 0).single().unwrap();
+        // MAX_GAP_SECONDS = 600. A gap of exactly 600s should stay connected
+        // (the comparison is `>`, not `>=`), 601s should split.
+        let at_threshold: SeriesPoints = vec![
+            (base, 1.0),
+            (base + TimeDelta::seconds(MAX_GAP_SECONDS as i64), 2.0),
+        ];
+        assert_eq!(split_by_gaps(&at_threshold).len(), 1);
+        let over_threshold: SeriesPoints = vec![
+            (base, 1.0),
+            (base + TimeDelta::seconds(MAX_GAP_SECONDS as i64 + 1), 2.0),
+        ];
+        assert_eq!(split_by_gaps(&over_threshold).len(), 2);
+    }
+
+    #[test]
+    fn split_by_gaps_empty_input() {
+        assert!(split_by_gaps(&[]).is_empty());
+    }
+
+    #[test]
+    fn network_bucket_series_uses_counter_deltas() {
+        let mk = |ts: f64, rx: f64, tx: f64| MetricSample {
+            ts,
+            kind: MetricKind::NetworkBytes,
+            source: "eth0".to_string(),
+            value: None,
+            unit: None,
+            details: json!({"rx_bytes": rx, "tx_bytes": tx}),
+        };
+        // 60s apart, within MAX_GAP, 5-min bucket
+        let metrics = vec![
+            mk(0.0, 1000.0, 100.0),
+            mk(60.0, 2500.0, 350.0),
+            mk(120.0, 3000.0, 600.0),
+        ];
+        let (rx, tx) = network_bucket_series(&metrics, 5 * 60);
+        assert_eq!(rx.len(), 1, "all three samples fall in one 5-min bucket");
+        // Deep into dt1=1500, dt2=500 → 2000 bytes / 2^20 MiB
+        let expected_rx = 2000.0 / 1_048_576.0;
+        let expected_tx = 500.0 / 1_048_576.0;
+        assert!((rx[0].1 - expected_rx).abs() < 1e-9);
+        assert!((tx[0].1 - expected_tx).abs() < 1e-9);
+    }
+
+    #[test]
+    fn network_bucket_series_skips_long_gap() {
+        let mk = |ts: f64, rx: f64| MetricSample {
+            ts,
+            kind: MetricKind::NetworkBytes,
+            source: "eth0".to_string(),
+            value: None,
+            unit: None,
+            details: json!({"rx_bytes": rx, "tx_bytes": 0.0}),
+        };
+        // Gap of 1 hour > MAX_GAP_SECONDS so the delta is dropped.
+        let metrics = vec![mk(0.0, 0.0), mk(3600.0, 1_000_000.0)];
+        let (rx, _tx) = network_bucket_series(&metrics, 5 * 60);
+        assert!(rx.is_empty(), "no bucket produced across a long gap");
     }
 }

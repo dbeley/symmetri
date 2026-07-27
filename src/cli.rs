@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Table};
@@ -13,12 +13,12 @@ use chrono::{DateTime, Local};
 
 use crate::cli_helpers::{
     average_rates, bucket_span_seconds, bucket_start, default_graph_path, estimate_runtime_hours,
-    format_runtime, is_charging, is_discharging,
+    format_runtime, is_charging, is_discharging, MAX_GAP_HOURS,
 };
 use crate::collector::{collect_loop, collect_once, resolve_db_path};
 use crate::db;
 use crate::graph;
-use crate::metrics::{MetricKind, MetricSample};
+use crate::metrics::{MetricKind, MetricSample, ReportPreset};
 use crate::timeframe::{build_timeframe, Timeframe};
 
 #[derive(Parser)]
@@ -31,18 +31,6 @@ pub struct Cli {
     pub command: Commands,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub enum ReportPreset {
-    All,
-    Battery,
-    Cpu,
-    Gpu,
-    Memory,
-    Network,
-    Temperature,
-    Disk,
-}
-
 #[derive(Subcommand)]
 pub enum Commands {
     /// Collect system metrics once (or repeatedly with --interval)
@@ -53,6 +41,10 @@ pub enum Commands {
         /// Optional interval seconds to loop forever
         #[arg(long = "interval")]
         interval: Option<u64>,
+        /// Prune samples older than N days after each collection tick
+        /// (or set SYMMETRI_PRUNE_DAYS). 0 disables pruning.
+        #[arg(long = "prune-days")]
+        prune_days: Option<u64>,
         /// Enable debug logging
         #[arg(short, long)]
         verbose: bool,
@@ -177,13 +169,19 @@ where
         Commands::Collect {
             db_path,
             interval,
+            prune_days,
             verbose,
         } => {
             configure_logging(verbose);
+            let prune_days = prune_days.or_else(|| {
+                std::env::var("SYMMETRI_PRUNE_DAYS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+            });
             if let Some(interval) = interval {
-                collect_loop(interval, db_path.as_deref(), None)?;
+                collect_loop(interval, db_path.as_deref(), None, prune_days)?;
             } else {
-                let code = collect_once(db_path.as_deref(), None)?;
+                let code = collect_once(db_path.as_deref(), None, prune_days)?;
                 if code != 0 {
                     return Err(anyhow::anyhow!("Collection failed with exit code {code}"));
                 }
@@ -216,10 +214,13 @@ where
             let since_ts = timeframe.since_timestamp(None);
             let raw_metrics =
                 db::fetch_metric_samples_with_conn(&conn, since_ts, Some(&metric_kinds))?;
-
-            let aggregated_metrics = crate::aggregate::aggregate_multi_device_metrics(&raw_metrics);
-            let metric_samples = filter_metrics_by_source(&aggregated_metrics, &sensor_filters);
             let timeframe_record_count = raw_metrics.len();
+
+            // Filter by `--sensor` BEFORE multi-battery aggregation: otherwise
+            // `--sensor BAT0` matches nothing because aggregation already
+            // combined BAT0+BAT1 into a single "BAT0+BAT1" source string.
+            let filtered_raw = filter_metrics_by_source(&raw_metrics, &sensor_filters);
+            let metric_samples = crate::aggregate::aggregate_multi_device_metrics(&filtered_raw);
 
             let has_selected_data = presets
                 .iter()
@@ -665,7 +666,7 @@ fn compute_network_rates(metrics: &[MetricSample]) -> Vec<NetworkRateSample> {
 
     let mut rates = Vec::new();
     for (_iface, mut samples) in by_iface {
-        samples.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
+        samples.sort_by(|a, b| a.ts.total_cmp(&b.ts));
         for window in samples.windows(2) {
             let prev = window[0];
             let next = window[1];
@@ -713,7 +714,7 @@ fn bucket_network_totals(
 
     let mut buckets: BTreeMap<DateTime<Local>, TransferStats> = BTreeMap::new();
     for (_iface, mut samples) in by_iface {
-        samples.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
+        samples.sort_by(|a, b| a.ts.total_cmp(&b.ts));
         for window in samples.windows(2) {
             let prev = window[0];
             let next = window[1];
@@ -783,8 +784,6 @@ fn battery_rate_buckets(
     BTreeMap<DateTime<Local>, NumberStats>,
     BTreeMap<DateTime<Local>, NumberStats>,
 ) {
-    const MAX_GAP_HOURS: f64 = 5.0 / 60.0;
-
     let mut discharge = BTreeMap::new();
     let mut charge = BTreeMap::new();
 

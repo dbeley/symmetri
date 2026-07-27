@@ -2,14 +2,30 @@ use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use std::thread;
 use std::time::Duration;
 
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
+
+/// Preset groupings selected via `symmetri report --preset`. Lives in the
+/// metrics domain layer rather than `cli` so chart/report code can depend on
+/// it without reaching into the CLI module.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum ReportPreset {
+    All,
+    Battery,
+    Cpu,
+    Gpu,
+    Memory,
+    Network,
+    Temperature,
+    Disk,
+}
 
 #[derive(
     Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display, EnumString, EnumIter,
@@ -111,6 +127,12 @@ struct CpuTimes {
 
 fn read_cpu_times() -> Option<Vec<CpuTimes>> {
     let content = fs::read_to_string("/proc/stat").ok()?;
+    parse_cpu_times(&content)
+}
+
+/// Pure parser for `/proc/stat`. Separated from [`read_cpu_times`] so the
+/// parser is testable without staging a fake procfs.
+fn parse_cpu_times(content: &str) -> Option<Vec<CpuTimes>> {
     let mut times = Vec::new();
     for line in content.lines() {
         if !line.starts_with("cpu") {
@@ -149,6 +171,10 @@ fn cpu_usage_samples(ts: f64) -> Vec<MetricSample> {
         Some(v) => v,
         None => return Vec::new(),
     };
+    // The usage measurement spans the 100ms between the two reads; stamp it at
+    // the midpoint so charts don't bias the line 50ms early on every sample.
+    const SAMPLE_WINDOW_SECS: f64 = 0.100;
+    let midpoint_ts = ts + SAMPLE_WINDOW_SECS / 2.0;
     thread::sleep(Duration::from_millis(100));
     let second = match read_cpu_times() {
         Some(v) => v,
@@ -188,7 +214,7 @@ fn cpu_usage_samples(ts: f64) -> Vec<MetricSample> {
             let busy = delta_total.saturating_sub(delta_idle);
             let usage = (busy as f64 / delta_total as f64) * 100.0;
             samples.push(MetricSample::new(
-                ts,
+                midpoint_ts,
                 MetricKind::CpuUsage,
                 prev.label.clone(),
                 Some(usage),
@@ -280,6 +306,11 @@ fn network_samples(ts: f64) -> Vec<MetricSample> {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
+    parse_network_dev(&content, ts)
+}
+
+/// Pure parser for `/proc/net/dev`. See [`parse_cpu_times`] for rationale.
+fn parse_network_dev(content: &str, ts: f64) -> Vec<MetricSample> {
     let mut samples = Vec::new();
     for line in content.lines().skip(2) {
         let mut parts = line.split(':');
@@ -354,7 +385,12 @@ fn disk_samples(ts: f64) -> Vec<MetricSample> {
 fn temperature_samples(ts: f64) -> Vec<MetricSample> {
     let mut samples = Vec::new();
 
-    // Read from /sys/class/thermal
+    // Read from /sys/class/thermal. We keep track of the hwmon devices that
+    // each thermal zone exposes (via the `thermal_zone*/hwmonN` symlinks the
+    // kernel publishes) so we can avoid duplicating their reading through the
+    // hwmon path below. Without this dedup the temperature chart shows the
+    // same physical sensor twice on most systems.
+    let mut thermal_hwmon_paths: Vec<PathBuf> = Vec::new();
     let thermal_root = Path::new("/sys/class/thermal");
     if let Ok(entries) = fs::read_dir(thermal_root) {
         for entry in entries.flatten() {
@@ -365,6 +401,18 @@ fn temperature_samples(ts: f64) -> Vec<MetricSample> {
                 .starts_with("thermal_zone")
             {
                 continue;
+            }
+            // Capture any hwmon symlink that lives under the zone; we skip
+            // those during the hwmon sweep.
+            if let Ok(hwmon_entries) = fs::read_dir(&path) {
+                for sub in hwmon_entries.flatten() {
+                    let sub_name = sub.file_name().to_string_lossy().to_string();
+                    if sub_name.starts_with("hwmon") {
+                        if let Ok(real) = fs::canonicalize(sub.path()) {
+                            thermal_hwmon_paths.push(real);
+                        }
+                    }
+                }
             }
             let label = fs::read_to_string(path.join("type"))
                 .ok()
@@ -390,11 +438,16 @@ fn temperature_samples(ts: f64) -> Vec<MetricSample> {
         }
     }
 
-    // Read from /sys/class/hwmon
+    // Read from /sys/class/hwmon, skipping the ones already exported via
+    // /sys/class/thermal above.
     let hwmon_root = Path::new("/sys/class/hwmon");
     if let Ok(entries) = fs::read_dir(hwmon_root) {
         for entry in entries.flatten() {
             let hwmon_path = entry.path();
+            let canonical = fs::canonicalize(&hwmon_path).unwrap_or(hwmon_path.clone());
+            if thermal_hwmon_paths.iter().any(|p| p == &canonical) {
+                continue;
+            }
             let name = fs::read_to_string(hwmon_path.join("name"))
                 .ok()
                 .map(|s| s.trim().to_string())
@@ -535,6 +588,17 @@ fn power_samples(ts: f64) -> Vec<MetricSample> {
             };
             let watts = raw_value / 1_000_000.0;
             let source = format!("{name}:{}", fname.trim_end_matches("_input"));
+            // Sanity threshold: a typical laptop SoC package draw is well
+            // under 200W. Anything north of 1000W almost certainly means the
+            // sensor reports in milliwatts rather than microwatts, and a
+            // 1000×-scaled reading would silently corrupt the power chart.
+            // We keep the value (so the user can audit it) but warn loudly.
+            if watts > 1000.0 {
+                log::warn!(
+                    "power reading {watts:.0} W from {source} exceeds sanity \
+                     threshold; sensor may report in mW rather than µW"
+                );
+            }
             samples.push(MetricSample::new(
                 ts,
                 MetricKind::PowerDraw,
@@ -563,4 +627,57 @@ pub fn collect_metrics(ts: f64) -> Vec<MetricSample> {
         metrics.extend(cpu_samples);
     }
     metrics
+}
+
+// ponytail: parse_pp_dpm_sclk and the per-source parsers backing gpu_samples/
+// power_samples/temperature_samples still read sysfs directly and have no unit
+// tests. Add when coverage of these becomes valuable beyond the hottest path.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_cpu_times_reads_aggregate_and_per_core() {
+        let content = "cpu  100 200 300 400 50 10 5 5 0 0\n\
+                       cpu0 10 20 30 40 5 1 0 1 0 0\n\
+                       intr 12345\n";
+        let times = parse_cpu_times(content).expect("should parse");
+        assert_eq!(times.len(), 2);
+        assert_eq!(times[0].label, "cpu");
+        assert_eq!(times[0].user, 100);
+        assert_eq!(times[0].steal, 5);
+        assert_eq!(times[1].label, "cpu0");
+        assert_eq!(times[1].idle, 40);
+    }
+
+    #[test]
+    fn parse_cpu_times_handles_missing_columns() {
+        // A `cpu` line with fewer than 8 numeric fields is skipped — it is
+        // malformed and not safe to compute deltas from.
+        let content = "cpu 1 2 3\n";
+        assert!(parse_cpu_times(content).is_none());
+    }
+
+    #[test]
+    fn parse_network_dev_extracts_interfaces() {
+        let content = "Inter-|   Receive                                                \
+                       |  Transmit\n\
+                       face |bytes    packets errs drop fifo frame compressed \
+                       multicast|bytes    packets errs drop fifo colls carrier compressed\n\
+                       eth0:   1000 50 0 0 0 0 0 0 2000 30 0 0 0 0 0 0\n\
+                       lo: 5 1 0 0 0 0 0 0 5 1 0 0 0 0 0 0\n";
+        let samples = parse_network_dev(content, 1234.5);
+        assert_eq!(samples.len(), 2);
+        let eth0 = samples.iter().find(|m| m.source == "eth0").unwrap();
+        assert_eq!(eth0.value, Some(3000.0)); // rx + tx
+        assert_eq!(
+            eth0.details.get("rx_bytes").and_then(|v| v.as_f64()),
+            Some(1000.0)
+        );
+        assert_eq!(
+            eth0.details.get("tx_bytes").and_then(|v| v.as_f64()),
+            Some(2000.0)
+        );
+    }
 }
