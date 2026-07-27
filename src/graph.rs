@@ -31,7 +31,8 @@ pub fn render_plot(
     timeframe: &Timeframe,
     output: &Path,
 ) -> Result<()> {
-    let charts = build_charts(metrics, presets, timeframe);
+    let bucket_seconds = bucket_span_seconds(timeframe, data_span_seconds(metrics));
+    let charts = build_charts(metrics, presets, timeframe, bucket_seconds);
     if charts.is_empty() {
         warn!("No values available to plot for selected presets");
         return Ok(());
@@ -44,7 +45,7 @@ pub fn render_plot(
     let areas = root.split_evenly((rows, 1));
 
     for (area, chart) in areas.into_iter().zip(charts.iter()) {
-        plot_chart(area, chart)?;
+        plot_chart(area, chart, bucket_seconds)?;
     }
 
     root.present()?;
@@ -56,10 +57,8 @@ fn build_charts(
     metrics: &[MetricSample],
     presets: &[ReportPreset],
     timeframe: &Timeframe,
+    bucket_seconds: i64,
 ) -> Vec<ChartSpec> {
-    // One bucket width is shared by every chart so the graph and the printed
-    // tables describe the same time cadence.
-    let bucket_seconds = bucket_span_seconds(timeframe, data_span_seconds(metrics));
     let mut charts = Vec::new();
     let label = timeframe.label.replace('_', " ");
 
@@ -235,7 +234,11 @@ fn build_charts(
     charts
 }
 
-fn plot_chart(area: DrawingArea<BitMapBackend, Shift>, chart: &ChartSpec) -> Result<()> {
+fn plot_chart(
+    area: DrawingArea<BitMapBackend, Shift>,
+    chart: &ChartSpec,
+    bucket_seconds: i64,
+) -> Result<()> {
     let mut all_points: SeriesPoints = Vec::new();
     for series in &chart.series {
         all_points.extend_from_slice(&series.points);
@@ -293,7 +296,7 @@ fn plot_chart(area: DrawingArea<BitMapBackend, Shift>, chart: &ChartSpec) -> Res
         // MAX_GAP_SECONDS apart (machine off, sleep, missed collector ticks).
         // Each run is a separate LineSeries, but only the first carries the
         // legend entry so duplicates don't appear.
-        let mut segments = split_by_gaps(&series.points).into_iter();
+        let mut segments = split_by_gaps(&series.points, bucket_seconds).into_iter();
         if let Some(first) = segments.next() {
             chart_ctx
                 .draw_series(LineSeries::new(first, &color))?
@@ -315,11 +318,20 @@ fn plot_chart(area: DrawingArea<BitMapBackend, Shift>, chart: &ChartSpec) -> Res
 }
 
 /// Splits a sorted point list into contiguous runs separated by gaps longer
-/// than `MAX_GAP_SECONDS` (machine off, etc.). Each returned Vec is suitable
-/// as input to one `LineSeries` so the line does not interpolate across the
-/// gap. Input is expected to be sorted ascending by timestamp.
-fn split_by_gaps(points: &[(DateTime<Local>, f64)]) -> Vec<SeriesPoints> {
-    let max_gap = TimeDelta::seconds(MAX_GAP_SECONDS.max(0.0) as i64);
+/// than the bucket width can bridge. Each returned Vec is suitable as input
+/// to one `LineSeries` so the line does not interpolate across the gap.
+/// Input is expected to be sorted ascending by timestamp.
+///
+/// The threshold is `max(MAX_GAP_SECONDS, 2 * bucket_seconds)`: a single
+/// missing bucket stays connected (its neighbours are exactly one bucket
+/// apart, well under `2 * bucket_seconds`), but a stretch covering more
+/// than one bucket of downtime splits the line. Without scaling to the
+/// bucket width, larger buckets (15m / 6h) would always exceed the raw
+/// 10-minute cadence threshold and every run would collapse to a single
+/// point, producing an empty plot.
+fn split_by_gaps(points: &[(DateTime<Local>, f64)], bucket_seconds: i64) -> Vec<SeriesPoints> {
+    let threshold_secs = (MAX_GAP_SECONDS as i64).max(bucket_seconds.saturating_mul(2));
+    let max_gap = TimeDelta::seconds(threshold_secs);
     let mut out = Vec::new();
     let mut current: SeriesPoints = Vec::new();
     for point in points {
@@ -555,12 +567,12 @@ mod tests {
         let base = chrono::Local.timestamp_opt(0, 0).single().unwrap();
         let a = base + TimeDelta::seconds(0);
         let b = base + TimeDelta::seconds(60);
-        // Gap of 30 minutes (well above MAX_GAP_SECONDS = 600s = 10 min).
+        // Gap of 30 minutes (well above threshold = 2*5min = 600s).
         let c = base + TimeDelta::seconds(60 + 1800);
         let d = base + TimeDelta::seconds(60 + 1860);
 
         let points: SeriesPoints = vec![(a, 1.0), (b, 2.0), (c, 3.0), (d, 4.0)];
-        let runs = split_by_gaps(&points);
+        let runs = split_by_gaps(&points, 5 * 60);
         assert_eq!(runs.len(), 2, "expected a break across the 30-min gap");
         assert_eq!(runs[0].len(), 2);
         assert_eq!(runs[1].len(), 2);
@@ -574,7 +586,7 @@ mod tests {
             (base + TimeDelta::seconds(60), 2.0),
             (base + TimeDelta::seconds(120), 3.0),
         ];
-        let runs = split_by_gaps(&points);
+        let runs = split_by_gaps(&points, 5 * 60);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].len(), 3);
     }
@@ -582,23 +594,49 @@ mod tests {
     #[test]
     fn split_by_gaps_breaks_exactly_at_threshold() {
         let base = chrono::Local.timestamp_opt(0, 0).single().unwrap();
-        // MAX_GAP_SECONDS = 600. A gap of exactly 600s should stay connected
-        // (the comparison is `>`, not `>=`), 601s should split.
-        let at_threshold: SeriesPoints = vec![
-            (base, 1.0),
-            (base + TimeDelta::seconds(MAX_GAP_SECONDS as i64), 2.0),
-        ];
-        assert_eq!(split_by_gaps(&at_threshold).len(), 1);
+        // For 5-min buckets, threshold is 2*300 = 600s. A gap of exactly
+        // 600s stays connected (the comparison is `>`, not `>=`), 601s splits.
+        let at_threshold: SeriesPoints =
+            vec![(base, 1.0), (base + TimeDelta::seconds(2 * 5 * 60), 2.0)];
+        assert_eq!(split_by_gaps(&at_threshold, 5 * 60).len(), 1);
         let over_threshold: SeriesPoints = vec![
             (base, 1.0),
-            (base + TimeDelta::seconds(MAX_GAP_SECONDS as i64 + 1), 2.0),
+            (base + TimeDelta::seconds(2 * 5 * 60 + 1), 2.0),
         ];
-        assert_eq!(split_by_gaps(&over_threshold).len(), 2);
+        assert_eq!(split_by_gaps(&over_threshold, 5 * 60).len(), 2);
+    }
+
+    #[test]
+    fn split_by_gaps_keeps_run_for_wide_buckets() {
+        // Regression: with buckets larger than MAX_GAP_SECONDS, adjacent
+        // buckets stayed spaced far enough apart that the old fixed
+        // 10-minute threshold treated every pair as downtime and collapsed
+        // the line into single-point runs (rendering blank plots).
+        let base = chrono::Local.timestamp_opt(0, 0).single().unwrap();
+        // 6-hour buckets (used for --days 6): adjacent points live 6h apart.
+        let points: SeriesPoints = vec![
+            (base, 1.0),
+            (base + TimeDelta::seconds(6 * 3600), 2.0),
+            (base + TimeDelta::seconds(2 * 6 * 3600), 3.0),
+        ];
+        let runs = split_by_gaps(&points, 6 * 3600);
+        assert_eq!(runs.len(), 1, "adjacent 6h buckets must stay connected");
+        assert_eq!(runs[0].len(), 3);
+    }
+
+    #[test]
+    fn split_by_gaps_splits_when_a_wide_bucket_is_missed() {
+        let base = chrono::Local.timestamp_opt(0, 0).single().unwrap();
+        // Two adjacent 6h buckets skipped (gap of 3 buckets = 18h).
+        let points: SeriesPoints =
+            vec![(base, 1.0), (base + TimeDelta::seconds(3 * 6 * 3600), 2.0)];
+        let runs = split_by_gaps(&points, 6 * 3600);
+        assert_eq!(runs.len(), 2);
     }
 
     #[test]
     fn split_by_gaps_empty_input() {
-        assert!(split_by_gaps(&[]).is_empty());
+        assert!(split_by_gaps(&[], 5 * 60).is_empty());
     }
 
     #[test]
